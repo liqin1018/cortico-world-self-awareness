@@ -132,12 +132,15 @@ export class SelfAwarenessWorld implements World {
       lamps: [
         {
           label: '自我意识',
-          state: cfg.enabled && endpoint.model ? 'online' : 'offline',
-          hint: !cfg.enabled
-            ? '已关闭'
-            : !endpoint.model
-              ? '还没配模型'
-              : this.lastError || `今天想过 ${this.budget.count} 次`,
+          // 出错要能一眼看见：不然 key 失效了还以为它在正常工作
+          state: this.lastError ? 'offline' : cfg.enabled && endpoint.model ? 'online' : 'offline',
+          hint: this.lastError
+            ? `出错：${clip(this.lastError, 30)}`
+            : !cfg.enabled
+              ? '已关闭'
+              : !endpoint.model
+                ? '还没配模型'
+                : `今天想过 ${this.budget.count} 次`,
         },
       ],
       badges: [

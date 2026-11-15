@@ -9,9 +9,9 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } fr
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
-export type ThoughtMode = 'reflect' | 'wonder' | 'plan' | 'doubt';
+export type ThoughtMode = 'reflect' | 'wonder' | 'plan' | 'doubt' | 'synthesize';
 
-export const THOUGHT_MODES: ThoughtMode[] = ['reflect', 'wonder', 'plan', 'doubt'];
+export const THOUGHT_MODES: ThoughtMode[] = ['reflect', 'wonder', 'plan', 'doubt', 'synthesize'];
 
 export interface Thought {
   id: string;

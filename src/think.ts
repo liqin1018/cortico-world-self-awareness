@@ -57,6 +57,12 @@ const MODE_ASK: Record<ThoughtMode, (ctx: ThinkContext) => string> = {
     ctx.focus
       ? `有件事你一直没想明白：「${ctx.focus}」。再想一次，可以还是想不明白。`
       : '有件事你一直没想明白。再想一次，可以还是想不明白。',
+  synthesize: (ctx) => {
+    const list = ctx.memories ?? [];
+    if (list.length < 2) return '你手上只有一件事。试着把它和别的什么连起来想。';
+    return `「${clip(list[0], 60)}」和「${clip(list[1], 60)}」——这两件事看着没关系。`
+      + '它们之间有没有相通的地方？\n别硬凑，真的没有就说没有。';
+  },
 };
 
 export function buildMessages(mode: ThoughtMode, ctx: ThinkContext): { role: string; content: string }[] {
