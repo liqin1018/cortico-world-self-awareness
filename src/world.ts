@@ -31,7 +31,8 @@ import {
   type ThoughtMode,
 } from './pool.ts';
 import { buildReflectMessages, callModel, thinkOnce, type ThinkContext } from './think.ts';
-import { clip, dayKey, humanSpan } from './time.ts';
+import { ThoughtSite } from './site.ts';
+import { clip, dayKey, humanSpan, moodWord, timeOfDay } from './time.ts';
 
 const TICK_MS = 60_000;
 /** 连续失败后别每 60 秒撞一次墙。 */
@@ -59,6 +60,14 @@ interface MemoryCoreState {
   lastUserAt?: string;
 }
 
+/** 一条素材：卡片（你记下的）或原文（他说过的）。 */
+interface Seed {
+  /** c:卡片前8位 / r:cursor */
+  ref: string;
+  text: string;
+  from: 'card' | 'raw';
+}
+
 interface CardLite {
   id: string;
   kind: string;
@@ -75,6 +84,7 @@ export class SelfAwarenessWorld implements World {
   private readonly ctx: WorldContext<SelfAwarenessConfig>;
   private readonly dataDir: string;
   private readonly pool: ThoughtPool;
+  private readonly site: ThoughtSite;
   private budget: BudgetState;
   private timer: ReturnType<typeof setInterval> | null = null;
   private host: WorldHost | null = null;
@@ -92,6 +102,7 @@ export class SelfAwarenessWorld implements World {
     const base = typeof ctx.dataDir === 'string' && ctx.dataDir ? ctx.dataDir : '.';
     this.dataDir = join(base, 'self-awareness');
     this.pool = new ThoughtPool(this.dataDir);
+    this.site = new ThoughtSite({ data: () => this.siteData() });
     this.budget = loadBudget(this.dataDir);
     const last = this.pool.all().slice(-1)[0];
     if (last) this.lastSnapshot = { ts: last.ts, text: last.text, mode: last.mode };
@@ -134,6 +145,9 @@ export class SelfAwarenessWorld implements World {
         { label: '下次', value: next },
         { label: '想法', value: this.pool.all().length },
       ],
+      ...(this.site.origin
+        ? { links: [{ label: '看她的时间线', href: this.site.origin, inheritTheme: false }] }
+        : {}),
       config: [SELF_AWARENESS_CONFIG_GROUP],
     };
   }
@@ -160,6 +174,16 @@ export class SelfAwarenessWorld implements World {
     } catch {
       // 日志失败不影响挂载
     }
+    if (cfg.siteEnabled) {
+      const origin = await this.site.start(cfg.sitePort).catch(() => null);
+      if (origin) {
+        try {
+          host.log?.info?.(`[self-awareness] 时间线页面 ${origin}`);
+        } catch {
+          // ignore
+        }
+      }
+    }
     this.timer = setInterval(() => {
       void this.tick();
     }, TICK_MS);
@@ -171,6 +195,7 @@ export class SelfAwarenessWorld implements World {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
     saveBudget(this.dataDir, this.budget);
+    await this.site.stop();
     this.host = null;
   }
 
@@ -244,9 +269,9 @@ export class SelfAwarenessWorld implements World {
       }
     }
 
-    const mode = this.nextMode();
+    const { mode, carry } = this.nextMode();
     const seeds = this.pickSeeds(mode, now);
-    const ctx = this.buildContext(core, now, seeds);
+    const ctx = this.buildContext(core, now, seeds, carry);
 
     const started = Date.now();
     const res = await thinkOnce(
@@ -256,10 +281,11 @@ export class SelfAwarenessWorld implements World {
         baseUrl: endpoint.baseUrl,
         model: endpoint.model,
         apiKey: String(cfg.apiKey ?? '').trim(),
-        maxTokens: Math.max(60, Number(cfg.maxOutputTokens) || 220),
+        // 保底 600：推理模型的 reasoning 也算在 max_tokens 里，给 220 会把正文挤没
+        maxTokens: Math.max(600, Number(cfg.maxOutputTokens) || 220),
         temperature: Number(cfg.temperature) || 0.95,
       },
-      seeds.map((c) => c.id.slice(0, 8)),
+      seeds.map((c) => c.ref),
     );
 
     if (!res.ok || !res.thought) {
@@ -273,7 +299,7 @@ export class SelfAwarenessWorld implements World {
 
     this.fails = 0;
     this.lastError = '';
-    const thought = this.pool.add(res.thought);
+    const thought = this.pool.add({ ...res.thought, carry: Boolean(carry) });
     this.lastSnapshot = { ts: thought.ts, text: thought.text, mode: thought.mode };
 
     this.budget.count += 1;
@@ -314,8 +340,6 @@ export class SelfAwarenessWorld implements World {
   ): Promise<void> {
     const recent = this.pool.recent(6).map((t) => clip(t.text, 90));
     if (recent.length < 3) return;
-    this.budget.pendingImportance = 0;
-    saveBudget(this.dataDir, this.budget);
 
     const last = this.pool.reflections().slice(-1)[0];
     const res = await callModel(
@@ -323,19 +347,35 @@ export class SelfAwarenessWorld implements World {
         baseUrl: endpoint.baseUrl,
         model: endpoint.model,
         apiKey: String(cfg.apiKey ?? '').trim(),
-        maxTokens: 120,
+        // 推理模型会先花几百 token 想，120 不够——实测会被 reasoning 吃干，正文为空
+        maxTokens: 600,
         temperature: 0.7,
       },
       buildReflectMessages(recent, last?.text),
     );
-    if (!res.ok || !res.text) return;
+    // 失败别清零：攒了这么久的重要度，一次网络抖动不该白扔
+    if (!res.ok || !res.text) {
+      this.lastError = `反思失败：${res.reason ?? '空返回'}`;
+      return;
+    }
 
     const line = clip(res.text.replace(/^["「]|["」]$/g, ''), 120);
-    // 模型自己说「没有」就别硬记
-    if (!line || /^没有[。.]?$/.test(line)) return;
+    // 模型自己说「没有」就别硬记，这时候才算这笔账结清
+    if (!line || /^没有[。.]?$/.test(line)) {
+      this.budget.pendingImportance = 0;
+      this.budget.tokens += (res.promptTokens ?? 0) + (res.outputTokens ?? 0);
+      saveBudget(this.dataDir, this.budget);
+      return;
+    }
     this.pool.addReflection(line, recent.length);
+    this.budget.pendingImportance = 0;
     this.budget.tokens += (res.promptTokens ?? 0) + (res.outputTokens ?? 0);
     saveBudget(this.dataDir, this.budget);
+    try {
+      this.host?.log?.info?.('[self-awareness] 反思', { from: recent.length, text: clip(line, 40) });
+    } catch {
+      // ignore
+    }
   }
 
   // ---- 素材 ----
@@ -412,36 +452,105 @@ export class SelfAwarenessWorld implements World {
   }
 
   /** 挑几张卡当这次的引子：排除两周内用过的，偏向最近的和权重高的。 */
-  private pickSeeds(mode: ThoughtMode, now: number): CardLite[] {
-    const all = this.cards();
-    if (!all.length) return [];
+  /**
+   * 挑这次要拿什么当引子。
+   *
+   * 卡片是结论（干），原文是现场（湿）。只吃卡片的话，三五条之后就绕着小黑盒转，
+   * 因为库里大半是「谁让我做什么」。所以两种混着挑：一条原话 + 一张卡。
+   */
+  private pickSeeds(mode: ThoughtMode, now: number): Seed[] {
     // plan 模式是「往后想」，不需要旧素材
     const want = mode === 'plan' ? 0 : mode === 'reflect' || mode === 'doubt' ? 1 : 2;
     if (!want) return [];
 
     const used = this.pool.seedsUsedSince(now - SEED_REUSE_MS);
-    const pool = all.filter((c) => !used.has(c.id.slice(0, 8)));
-    const source = pool.length >= want ? pool : all;
+    const rank = <T extends { score: number }>(list: T[]) => list.sort((a, b) => b.score - a.score);
 
-    const scored = source.map((c) => {
-      const age = now - (Date.parse(c.createdAt ?? '') || now);
-      const fresh = Math.max(0, 1 - age / (30 * 86_400_000));
-      // 卡片里大头是「谁让我做什么」这类指令，拿它当发呆素材只会想出工作汇报。
-      // 偏向关于人的：自己/关系、经历、承诺；事实类降权。
-      const bias = KIND_BIAS[c.kind] ?? 0.7;
-      return { c, score: ((Number(c.weight) || 0.5) * 0.5 + fresh * 0.5) * bias + Math.random() * 0.35 };
-    });
-    scored.sort((a, b) => b.score - a.score);
-    return scored.slice(0, want).map((x) => x.c);
+    const cards = this.cards()
+      .filter((c) => !used.has(`c:${c.id.slice(0, 8)}`))
+      .map((c) => {
+        const age = now - (Date.parse(c.createdAt ?? '') || now);
+        const fresh = Math.max(0, 1 - age / (30 * 86_400_000));
+        // 卡片里大头是「谁让我做什么」这类指令，拿它当发呆素材只会想出工作汇报。
+        // 偏向关于人的：自己/关系、经历、承诺；事实类降权。
+        const bias = KIND_BIAS[c.kind] ?? 0.7;
+        return {
+          ref: `c:${c.id.slice(0, 8)}`,
+          text: c.text,
+          from: 'card' as const,
+          score: ((Number(c.weight) || 0.5) * 0.5 + fresh * 0.5) * bias + Math.random() * 0.3,
+        };
+      });
+    const raws = this.rawSeeds(now)
+      .filter((r) => !used.has(r.ref))
+      .map((r) => ({ ...r, score: 1 + Math.random() * 0.3 }));
+
+    const picked: Seed[] = [];
+    // 两条以上时，先保证有一条原话——原文比结论更有画面
+    if (want >= 2 && raws.length) {
+      const top = rank(raws)[0];
+      picked.push({ ref: top.ref, text: top.text, from: 'raw' });
+    }
+    for (const c of rank(cards)) {
+      if (picked.length >= want) break;
+      picked.push({ ref: c.ref, text: c.text, from: 'card' });
+    }
+    // 卡片不够就用原文补
+    for (const r of rank(raws)) {
+      if (picked.length >= want) break;
+      if (picked.some((p) => p.ref === r.ref)) continue;
+      picked.push({ ref: r.ref, text: r.text, from: 'raw' });
+    }
+    return picked;
   }
 
-  private buildContext(core: MemoryCoreState | null, now: number, seeds: CardLite[]): ThinkContext {
+  /** 从原文库里挑几句「像人说的话」：不要界面回执，不要长文，不要没标点的碎片。 */
+  private rawSeeds(now: number): Seed[] {
+    const dir = this.coreDir();
+    if (!dir) return [];
+    const file = join(dir, 'turns.jsonl');
+    if (!existsSync(file)) return [];
+    let raw = '';
+    try {
+      raw = readFileSync(file, 'utf8');
+    } catch {
+      return [];
+    }
+    const lines = raw.split('\n').filter(Boolean).slice(-140);
+    const junk = /^(选了|点了|返回|打开|关闭|确认|取消|好的|嗯|哦|在吗)/;
+    const out: Seed[] = [];
+    for (let i = lines.length - 1; i >= 0 && out.length < 14; i -= 1) {
+      let e: { cursor?: number; ts?: string; text?: string };
+      try {
+        e = JSON.parse(lines[i]) as typeof e;
+      } catch {
+        continue;
+      }
+      const text = String(e.text ?? '').replace(/\s+/g, ' ').trim();
+      if (text.length < 12 || text.length > 70) continue;
+      if (!/[，。？！…]/.test(text)) continue;
+      if (junk.test(text)) continue;
+      const at = Date.parse(String(e.ts ?? ''));
+      if (Number.isFinite(at) && now - at > 14 * 86_400_000) continue;
+      out.push({ ref: `r:${e.cursor ?? i}`, text, from: 'raw' });
+    }
+    return out;
+  }
+
+  private buildContext(
+    core: MemoryCoreState | null,
+    now: number,
+    seeds: Seed[],
+    carry?: string,
+  ): ThinkContext {
     const tz = this.tz();
-    const bits: string[] = [formatLocal(now, tz).slice(5, 16)];
+    // 「11-15 23:30（深夜）」——只说时间她不知道那是深夜，会想出「下午出去走走」
+    const bits: string[] = [`${formatLocal(now, tz).slice(5, 16)}（${timeOfDay(now, tz)}）`];
     if (core?.activity) bits.push(`你在${core.activity}`);
     else bits.push('你一个人待着');
     if (core?.location) bits.push(`在${core.location}`);
     if (typeof core?.energy === 'number') bits.push(`精力 ${Math.round(core.energy)}`);
+    if (typeof core?.mood === 'number') bits.push(`心情${moodWord(core.mood)}`);
 
     const lastUser = core?.lastUserAt ? Date.parse(core.lastUserAt) : 0;
     const silence = Number.isFinite(lastUser) && lastUser > 0 ? humanSpan(now - lastUser) : '';
@@ -461,23 +570,66 @@ export class SelfAwarenessWorld implements World {
       silence,
       memories,
       recent: this.pool.recent(3).map((t) => clip(t.text, 60)),
-      focus: seeds[0] ? clip(seeds[0].text, 50) : undefined,
+      focus: carry ? clip(carry, 50) : seeds[0] ? clip(seeds[0].text, 50) : undefined,
+      carry: Boolean(carry),
       selfView: reflections.length ? clip(reflections.slice(-1)[0].text, 80) : undefined,
       persona: String(this.cfg().personaNote ?? '').trim() || undefined,
     };
   }
 
-  /** 模式轮换：七成按顺序，三成随机跳，免得形成「每个模式轮流打卡」的机械感。 */
-  private nextMode(): ThoughtMode {
+  /**
+   * 模式轮换：七成按顺序，三成随机跳，免得形成「每个模式轮流打卡」的机械感。
+   * 另外三成概率接着上一条想下去——人想事情是连着的，不是十二件互不相干的小事。
+   */
+  private nextMode(): { mode: ThoughtMode; carry?: string } {
+    const last = this.pool.recent(1)[0];
+    const fresh = last && Date.now() - (Date.parse(last.ts) || 0) < 2 * 3_600_000;
+    if (fresh && Math.random() < 0.3) {
+      return { mode: 'reflect', carry: last.text };
+    }
     if (Math.random() < 0.3) {
-      return THOUGHT_MODES[Math.floor(Math.random() * THOUGHT_MODES.length)];
+      return { mode: THOUGHT_MODES[Math.floor(Math.random() * THOUGHT_MODES.length)] };
     }
     const m = THOUGHT_MODES[this.modeCursor % THOUGHT_MODES.length];
     this.modeCursor += 1;
-    return m;
+    return { mode: m };
   }
 
   // ---- 给状态页看 ----
+
+  /** 时间线页面要的数据：倒序、只给最近 60 条。 */
+  private siteData(): Record<string, unknown> {
+    const cfg = this.cfg();
+    const endpoint = resolveEndpoint(cfg);
+    return {
+      enabled: Boolean(cfg.enabled),
+      model: endpoint.model || null,
+      today: { count: this.budget.count, tokens: this.budget.tokens },
+      limit: { count: Number(cfg.dailyLimit) || 0, tokens: Number(cfg.dailyTokenBudget) || 0 },
+      nextDueAt: this.budget.nextDueAt ?? null,
+      totalThoughts: this.pool.all().length,
+      thoughts: this.pool
+        .all()
+        .slice(-60)
+        .reverse()
+        .map((t) => ({
+          id: t.id,
+          ts: t.ts,
+          mode: t.mode,
+          text: t.text,
+          importance: t.importance,
+          carry: Boolean(t.carry),
+          promptTokens: t.promptTokens ?? 0,
+          outputTokens: t.outputTokens ?? 0,
+        })),
+      reflections: this.pool
+        .reflections()
+        .slice(-5)
+        .reverse()
+        .map((r) => ({ ts: r.ts, text: r.text, fromCount: r.fromCount })),
+      error: this.lastError || null,
+    };
+  }
 
   snapshot(): Record<string, unknown> {
     const cfg = this.cfg();

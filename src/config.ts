@@ -24,6 +24,9 @@ export interface SelfAwarenessConfig {
   temperature: number;
   /** 一句话交代她是谁，写进思考的上下文。留空就只按记忆来。 */
   personaNote: string;
+  /** 本地时间线页面 */
+  siteEnabled: boolean;
+  sitePort: number;
   /** 记忆核心的数据目录。留空自动找同级的 memory-core。 */
   memoryCoreDir: string;
 }
@@ -51,6 +54,8 @@ export const SELF_AWARENESS_DEFAULTS: SelfAwarenessConfig = {
   maxOutputTokens: 220,
   temperature: 0.95,
   personaNote: '',
+  siteEnabled: true,
+  sitePort: 7802,
   memoryCoreDir: '',
 };
 
@@ -164,6 +169,20 @@ const RAW_GROUP: ConfigGroup = {
         default: '',
         'x-hot': true,
       } as never,
+      'worlds.self-awareness.siteEnabled': {
+        type: 'boolean',
+        title: '本地时间线页面',
+        description: '开一个只在本机的小网页，能按时间翻她想过的每一条、她自己收成的自我认知，以及今天花了多少。只绑 127.0.0.1，不对外。',
+        default: true,
+      },
+      'worlds.self-awareness.sitePort': {
+        type: 'integer',
+        title: '页面端口',
+        description: '默认 7802。被占用会自动往后找。改完要重启 World。',
+        minimum: 1024,
+        maximum: 65_535,
+        default: 7802,
+      },
       'worlds.self-awareness.memoryCoreDir': {
         type: 'string',
         title: '记忆核心目录',
@@ -190,6 +209,8 @@ const SETTINGS_ORDER = [
   'worlds.self-awareness.maxOutputTokens',
   'worlds.self-awareness.temperature',
   'worlds.self-awareness.personaNote',
+  'worlds.self-awareness.siteEnabled',
+  'worlds.self-awareness.sitePort',
   'worlds.self-awareness.memoryCoreDir',
 ];
 

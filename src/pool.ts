@@ -24,6 +24,8 @@ export interface Thought {
   seeds: string[];
   promptTokens?: number;
   outputTokens?: number;
+  /** 这条是接着上一条想下去的，不是新起一件 */
+  carry?: boolean;
 }
 
 export interface Reflection {
@@ -94,6 +96,7 @@ export class ThoughtPool {
       seeds: t.seeds ?? [],
       ...(t.promptTokens ? { promptTokens: t.promptTokens } : {}),
       ...(t.outputTokens ? { outputTokens: t.outputTokens } : {}),
+      ...(t.carry ? { carry: true } : {}),
     };
     ensureDir(this.dir);
     // 先让 cache 落地再 append：否则 all() 会从文件里读回刚写的那条，push 之后就有了两份

@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>她的时间线 · 自我意识</title>
+<style>
+  :root {
+    --bg: #060911;
+    --panel: rgba(120, 220, 214, 0.045);
+    --line: rgba(120, 220, 214, 0.14);
+    --text: #d9e6f2;
+    --dim: rgba(150, 172, 200, 0.55);
+    --faint: rgba(150, 172, 200, 0.32);
+    --accent: #7fe3d4;
+    --reflect: #7fe3d4;
+    --wonder: #b9a7ff;
+    --plan: #8cc4ff;
+    --doubt: #ffc27f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.65 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    padding: 28px 20px 64px;
+  }
+  .wrap { max-width: 760px; margin: 0 auto; }
+  header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 6px; }
+  h1 { font-size: 17px; font-weight: 500; margin: 0; letter-spacing: .02em; }
+  h1::before {
+    content: ''; display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+    background: var(--accent); box-shadow: 0 0 12px var(--accent); margin-right: 9px; vertical-align: 3px;
+  }
+  .sub { color: var(--faint); font-size: 12px; letter-spacing: .04em; }
+  .stats {
+    display: flex; gap: 22px; flex-wrap: wrap; margin: 18px 0 26px;
+    padding: 14px 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
+  }
+  .stat { min-width: 78px; }
+  .stat b { display: block; font-size: 19px; font-weight: 500; font-variant-numeric: tabular-nums; }
+  .stat span { color: var(--dim); font-size: 11.5px; }
+  .warn { color: #ffb3a7; }
+  .err {
+    margin: 0 0 20px; padding: 10px 14px; border-radius: 8px;
+    border: 1px solid rgba(255, 120, 100, 0.3); background: rgba(255, 90, 70, 0.07);
+    color: #ffb3a7; font-size: 12.5px;
+  }
+  h2 {
+    font-size: 12px; font-weight: 500; color: var(--faint); letter-spacing: .16em;
+    text-transform: none; margin: 30px 0 14px;
+  }
+  .list { position: relative; padding-left: 20px; min-height: 60px; }
+  .list::before {
+    content: ''; position: absolute; left: 4px; top: 6px; bottom: 0; width: 1px;
+    background: linear-gradient(180deg, var(--line) 0%, var(--line) 70%, transparent);
+  }
+  .item { position: relative; padding: 0 0 20px; }
+  .item::before {
+    content: ''; position: absolute; left: -19px; top: 8px; width: 5px; height: 5px;
+    border-radius: 50%; background: var(--accent); opacity: .75;
+  }
+  .item.reflect::before { background: var(--reflect); }
+  .item.wonder::before { background: var(--wonder); }
+  .item.plan::before { background: var(--plan); }
+  .item.doubt::before { background: var(--doubt); }
+  .meta { display: flex; align-items: center; gap: 10px; font-size: 11.5px; color: var(--faint); margin-bottom: 5px; }
+  .mode { letter-spacing: .06em; }
+  .item.reflect .mode { color: var(--reflect); }
+  .item.wonder .mode { color: var(--wonder); }
+  .item.plan .mode { color: var(--plan); }
+  .item.doubt .mode { color: var(--doubt); }
+  .dots { display: inline-flex; gap: 2px; }
+  .dots i { width: 5px; height: 5px; border-radius: 50%; background: rgba(150, 172, 200, 0.18); }
+  .dots i.on { background: currentColor; opacity: .85; }
+  .text { white-space: pre-wrap; word-break: break-word; }
+  .carry { color: var(--faint); font-size: 11px; margin-left: 4px; }
+  .empty { color: var(--faint); padding: 26px 0; }
+  .refl { padding: 12px 16px; border-left: 2px solid var(--accent); background: var(--panel); border-radius: 0 8px 8px 0; margin-bottom: 12px; }
+  .refl .meta { margin-bottom: 6px; }
+  footer { margin-top: 40px; color: var(--faint); font-size: 11.5px; letter-spacing: .03em; }
+  code { font-family: ui-monospace, Consolas, monospace; font-size: 11.5px; color: var(--dim); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>她的时间线</h1>
+    <span class="sub" id="sub">读取中…</span>
+  </header>
+
+  <div class="stats" id="stats"></div>
+  <div id="err"></div>
+
+  <h2>想过的事</h2>
+  <div id="list" class="list"><div class="empty">还没有想法。<br>她每 25–90 分钟想一次，第一条通常要等几分钟。</div></div>
+
+  <div id="reflWrap" hidden>
+    <h2>她对自己的看法</h2>
+    <div id="refl"></div>
+  </div>
+
+  <footer>
+    数据来自 <code>self-awareness/thoughts.jsonl</code>，只存在这台机器上。每 30 秒自动刷新。
+  </footer>
+</div>
+
+<script>
+const MODE_NAME = { reflect: '回看', wonder: '走神', plan: '打算', doubt: '琢磨' };
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+
+function clock(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const p = (n) => String(n).padStart(2, '0');
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+function dots(n) {
+  let out = '<span class="dots">';
+  for (let i = 1; i <= 10; i += 1) out += `<i class="${i <= n ? 'on' : ''}"></i>`;
+  return out + '</span>';
+}
+
+function render(d) {
+  document.getElementById('sub').textContent = d.model ? `模型 ${d.model}` : '还没配模型';
+
+  const next = d.nextDueAt ? clock(d.nextDueAt) : '未安排';
+  const limit = d.limit?.count || 0;
+  document.getElementById('stats').innerHTML = [
+    `<div class="stat"><b>${d.today?.count ?? 0}${limit ? `<span style="font-size:12px;color:var(--faint)">/${limit}</span>` : ''}</b><span>今天想过</span></div>`,
+    `<div class="stat"><b>${(d.today?.tokens ?? 0).toLocaleString()}</b><span>今天用了 token</span></div>`,
+    `<div class="stat"><b>${d.totalThoughts ?? 0}</b><span>一共想过</span></div>`,
+    `<div class="stat"><b style="font-size:15px">${next}</b><span>下次</span></div>`,
+    `<div class="stat"><b style="font-size:15px" class="${d.enabled ? '' : 'warn'}">${d.enabled ? '在跑' : '已关'}</b><span>状态</span></div>`,
+  ].join('');
+
+  document.getElementById('err').innerHTML = d.error
+    ? `<div class="err">上次调用失败：${esc(d.error)}</div>`
+    : '';
+
+  const list = d.thoughts || [];
+  document.getElementById('list').innerHTML = list.length
+    ? list.map((t) => `
+      <div class="item ${esc(t.mode)}">
+        <div class="meta">
+          <span>${clock(t.ts)}</span>
+          <span class="mode">${MODE_NAME[t.mode] || t.mode}</span>
+          ${dots(t.importance)}
+          ${t.carry ? '<span class="carry">接着上次</span>' : ''}
+        </div>
+        <div class="text">${esc(t.text)}</div>
+      </div>`).join('')
+    : '<div class="empty">还没有想法。<br>她每 25–90 分钟想一次，第一条通常要等几分钟。</div>';
+
+  const refl = d.reflections || [];
+  document.getElementById('reflWrap').hidden = !refl.length;
+  document.getElementById('refl').innerHTML = refl.map((r) => `
+    <div class="refl">
+      <div class="meta"><span>${clock(r.ts)}</span><span>由 ${r.fromCount} 条想法收成</span></div>
+      <div class="text">${esc(r.text)}</div>
+    </div>`).join('');
+}
+
+async function load() {
+  try {
+    const rsp = await fetch('/api/data', { cache: 'no-store' });
+    render(await rsp.json());
+  } catch (e) {
+    document.getElementById('sub').textContent = '读不到数据';
+  }
+}
+
+load();
+setInterval(load, 30000);
+</script>
+</body>
+</html>

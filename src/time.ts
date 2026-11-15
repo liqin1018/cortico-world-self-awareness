@@ -31,6 +31,34 @@ export function humanSpan(ms: number): string {
   return `${Math.round(h / 24)} 天`;
 }
 
+/** 一天里的哪一段。她需要知道「现在是深夜」，不然会想出「下午出去走走」。 */
+export function timeOfDay(ms: number, tz: string): string {
+  const h = localHour(ms, tz);
+  if (h >= 5 && h < 8) return '清晨';
+  if (h >= 8 && h < 11) return '上午';
+  if (h >= 11 && h < 13) return '中午';
+  if (h >= 13 && h < 17) return '下午';
+  if (h >= 17 && h < 19) return '傍晚';
+  if (h >= 19 && h < 23) return '晚上';
+  return '深夜';
+}
+
+export function localHour(ms: number, tz: string): number {
+  const s = formatLocal(ms, tz);
+  return Number(s.slice(11, 13)) || 0;
+}
+
+/** 心情说成人话，和记忆核心的档位对齐。 */
+export function moodWord(mood: number): string {
+  const v = Number(mood);
+  if (!Number.isFinite(v)) return '一般';
+  if (v >= 78) return '很好';
+  if (v >= 62) return '还行';
+  if (v >= 45) return '一般';
+  if (v >= 30) return '有点低落';
+  return '很难过';
+}
+
 export function clip(text: string, limit: number): string {
   const s = String(text ?? '').replace(/\s+/g, ' ').trim();
   return s.length > limit ? `${s.slice(0, limit)}…` : s;

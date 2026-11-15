@@ -23,6 +23,8 @@ export interface ThinkContext {
   selfView?: string;
   /** 她是谁（配置里那句话） */
   persona?: string;
+  /** 这次是接着上一条想下去，不是新起一件 */
+  carry?: boolean;
 }
 
 function systemPrompt(persona?: string): string {
@@ -42,10 +44,13 @@ importance 是 1-10：这件事对你有多重要。10 = 你会一直想它。`;
 }
 
 const MODE_ASK: Record<ThoughtMode, (ctx: ThinkContext) => string> = {
-  reflect: (ctx) =>
-    ctx.focus
-      ? `你想起了这件事：「${ctx.focus}」。现在回头看它，感觉和当时一样吗？`
-      : '你想起了以前的一件事。现在回头看它，感觉和当时一样吗？',
+  reflect: (ctx) => {
+    if (!ctx.focus) return '你想起了以前的一件事。现在回头看它，感觉和当时一样吗？';
+    if (ctx.carry) {
+      return `你上次想到「${ctx.focus}」，没想完。接着往下想——说新的一层，别把上次那句重说一遍。`;
+    }
+    return `你想起了这件事：「${ctx.focus}」。现在回头看它，感觉和当时一样吗？`;
+  },
   wonder: () => '你手上没在做什么，脑子飘走了。飘到哪算哪，不用有理由。',
   plan: () => '你在想接下来要做什么。不是任务清单，是你自己想做的事。',
   doubt: (ctx) =>
@@ -66,7 +71,7 @@ export function buildMessages(mode: ThoughtMode, ctx: ThinkContext): { role: str
   if (ctx.recent.length) {
     lines.push('（你最近想过的：');
     for (const r of ctx.recent) lines.push(`· ${r}`);
-    lines.push('这些已经想过了，别重复。）');
+    lines.push('同一件事可以接着想，但要说新的一层，别把上面的话重说一遍；换新的事也行。）');
   } else {
     lines.push('（你最近没想过什么。）');
   }
@@ -125,7 +130,16 @@ export async function callModel(opts: ModelOptions, messages: { role: string; co
       usage?: { prompt_tokens?: number; completion_tokens?: number };
     };
     const text = String(data.choices?.[0]?.message?.content ?? '').trim();
-    if (!text) return { ok: false, reason: '模型返回了空内容' };
+    if (!text) {
+      // 推理模型（deepseek-flash 这类）会先用掉一大截 token 想，额度给小了正文就没空间。
+      // 这里自动加额重试一次——max_tokens 只是上限，给大了不额外花钱。
+      const used = Number(data.usage?.completion_tokens) || 0;
+      const reason = String(data.choices?.[0]?.finish_reason ?? '');
+      if (opts.maxTokens < 2400) {
+        return callModel({ ...opts, maxTokens: Math.max(800, opts.maxTokens * 3 + 200) }, messages);
+      }
+      return { ok: false, reason: `模型返回了空内容（输出 ${used} token，finish=${reason || '?'}）` };
+    }
     return {
       ok: true,
       text,
