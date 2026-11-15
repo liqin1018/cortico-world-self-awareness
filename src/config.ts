@@ -75,8 +75,8 @@ const RAW_GROUP: ConfigGroup = {
       'worlds.self-awareness.provider': {
         type: 'string',
         enum: ['deepseek', 'openai', 'ollama', 'custom'],
-        title: '用哪家',
-        description: '选一个就行，下面两项留空就用它的默认地址和模型。本地 Ollama 不用密钥。',
+        title: '快捷预设',
+        description: '只是快捷选择：下面两项留空才用它。你已经填了地址和模型，那选哪个都一样——只有 ollama 例外，它不需要密钥。',
         default: 'deepseek',
         'x-hot': true,
       } as never,
