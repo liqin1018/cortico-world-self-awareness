@@ -26,6 +26,10 @@ export interface Thought {
   outputTokens?: number;
   /** 这条是接着上一条想下去的，不是新起一件 */
   carry?: boolean;
+  /** 她自己定的下次间隔（分钟）。没写就按密度算。 */
+  nextIn?: number;
+  /** 她给自己留的话：「明早再看看那个帖子」。下次会原样递回去。 */
+  nextNote?: string;
 }
 
 export interface Reflection {
@@ -97,6 +101,8 @@ export class ThoughtPool {
       ...(t.promptTokens ? { promptTokens: t.promptTokens } : {}),
       ...(t.outputTokens ? { outputTokens: t.outputTokens } : {}),
       ...(t.carry ? { carry: true } : {}),
+      ...(t.nextIn ? { nextIn: t.nextIn } : {}),
+      ...(t.nextNote ? { nextNote: t.nextNote } : {}),
     };
     ensureDir(this.dir);
     // 先让 cache 落地再 append：否则 all() 会从文件里读回刚写的那条，push 之后就有了两份
@@ -174,6 +180,17 @@ export function clamp01(n: number): number {
   return Math.max(0, Math.min(1, Number.isFinite(n) ? n : 0));
 }
 
+/** 她自己说的「多久之后再想」的允许范围。上下都留边：说 1 分钟太密，说三天就断了。 */
+export const NEXT_MIN_MINUTES = 15;
+export const NEXT_MAX_MINUTES = 360;
+
+/** 把模型给的值收进合法范围；不是数字就当没写。 */
+export function clampNextIn(value: unknown): number | undefined {
+  const v = Number(value);
+  if (!Number.isFinite(v) || v <= 0) return undefined;
+  return Math.round(Math.max(NEXT_MIN_MINUTES, Math.min(NEXT_MAX_MINUTES, v)));
+}
+
 /** 累计重要度到这条线就该往上抽象一层了（写一条 reflection）。 */
 export const REFLECT_THRESHOLD = 24;
 
@@ -184,6 +201,8 @@ export interface BudgetState {
   pendingImportance: number;
   lastThoughtAt?: string;
   nextDueAt?: string;
+  /** 她留的那句话已经递过一次了，别重复递。 */
+  lastNoteId?: string;
 }
 
 const BUDGET_FILE = 'state.json';
@@ -200,6 +219,7 @@ export function loadBudget(dir: string): BudgetState {
       pendingImportance: Number(raw.pendingImportance) || 0,
       ...(raw.lastThoughtAt ? { lastThoughtAt: String(raw.lastThoughtAt) } : {}),
       ...(raw.nextDueAt ? { nextDueAt: String(raw.nextDueAt) } : {}),
+      ...(raw.lastNoteId ? { lastNoteId: String(raw.lastNoteId) } : {}),
     };
   } catch {
     return { day: '', count: 0, tokens: 0, pendingImportance: 0 };

@@ -271,5 +271,77 @@ await (async () => {
   await world.stop();
 }
 
+/* 8) 她自己定下次什么时候想 */
+{
+  const { world } = makeWorld({ enabled: true, dailyLimit: 20, minGapMin: 25, maxGapMin: 90 });
+  const realFetch = globalThis.fetch;
+  const users: string[] = [];
+  let nth = 0;
+  globalThis.fetch = (async (_u: unknown, init: { body?: string } = {}) => {
+    const body = JSON.parse(String(init.body ?? '{}')) as { messages: { content: string }[] };
+    users.push(body.messages?.[1]?.content ?? '');
+    nth += 1;
+    return {
+      ok: true,
+      json: async () => ({
+        choices: [{
+          message: {
+            content: `{"thought":"第${nth}条","importance":6,"next":{"in":300,"note":"留话${nth}"}}`,
+          },
+        }],
+        usage: { prompt_tokens: 100, completion_tokens: 30 },
+      }),
+    } as never;
+  }) as never;
+
+  await world.start(host() as never);
+  const internals = world as unknown as { budget: { nextDueAt?: string; lastNoteId?: string }; tick(): Promise<void> };
+
+  internals.budget.nextDueAt = new Date(Date.now() - 1000).toISOString();
+  await internals.tick();
+  const gap1 = (Date.parse(String(internals.budget.nextDueAt)) - Date.now()) / 60_000;
+  ok(gap1 > 290 && gap1 < 305, `39) 她说明天再看 → 间隔按她说的 300 分钟（实际 ${Math.round(gap1)}）`);
+
+  // 第二次：应该把上次那句原样递回去
+  internals.budget.nextDueAt = new Date(Date.now() - 1000).toISOString();
+  await internals.tick();
+  const second = users[1] ?? '';
+  ok(second.includes('上次你自己留了一句'), '40) 下次的上下文里有她自己的留话');
+  ok(second.includes('留话1'), '41) 递回去的是原文');
+  ok(Boolean(internals.budget.lastNoteId), '42) 记下已经递过哪条');
+
+  // 第三次：同一条不重复递
+  internals.budget.nextDueAt = new Date(Date.now() - 1000).toISOString();
+  await internals.tick();
+  const third = users[2] ?? '';
+  ok(third.includes('留话2') && !third.includes('留话1'), '43) 只递最新那条，旧的不会再翻出来');
+
+  globalThis.fetch = realFetch;
+  await world.stop();
+}
+
+/* 9) 她没留话时按密度兜底 */
+{
+  const { world } = makeWorld({ enabled: true, dailyLimit: 20, minGapMin: 25, maxGapMin: 90 });
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async () => ({
+    ok: true,
+    json: async () => ({
+      choices: [{ message: { content: '{"thought":"没什么","importance":3}' } }],
+      usage: { prompt_tokens: 50, completion_tokens: 10 },
+    }),
+  })) as never;
+
+  await world.start(host() as never);
+  const internals = world as unknown as { budget: { nextDueAt?: string }; tick(): Promise<void> };
+  internals.budget.nextDueAt = new Date(Date.now() - 1000).toISOString();
+  await internals.tick();
+  const gap = (Date.parse(String(internals.budget.nextDueAt)) - Date.now()) / 60_000;
+  ok(gap >= 20 && gap <= 45, `44) 她没留话 → 按密度算，落在 25-35 附近（实际 ${Math.round(gap)}）`);
+
+  globalThis.fetch = realFetch;
+  await world.stop();
+}
+
 console.log(bad ? `\n${bad} 项失败（共 ${total}）` : `\n全部通过（共 ${total} 项）`);
 if (bad) process.exitCode = 1;

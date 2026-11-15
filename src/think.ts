@@ -5,7 +5,7 @@
  * 全部用「你就是她」的第二人称写提示词——用第三人称会写成分析报告。
  */
 import type { Thought, ThoughtMode } from './pool.ts';
-import { clampImportance, density } from './pool.ts';
+import { clampImportance, clampNextIn, density } from './pool.ts';
 import { clip } from './time.ts';
 
 export interface ThinkContext {
@@ -23,6 +23,8 @@ export interface ThinkContext {
   selfView?: string;
   /** 她是谁（配置里那句话） */
   persona?: string;
+  /** 上次她给自己留的那句话，原样递回来 */
+  lastNote?: string;
   /** 这次是接着上一条想下去，不是新起一件 */
   carry?: boolean;
 }
@@ -37,10 +39,13 @@ ${persona ? `你是谁：${persona}\n` : ''}
 - 别汇报工作，别复述别人交给你做的事。独处时想的不是待办。
 - 想不通就想不通，可以停在半路。人独处时大部分念头都没有结论。
 - 不要提「用户」「对话」「模型」「AI」「记忆」「记录」「卡片」这些词。
+- 想完之后，留一句「下次从哪儿接着想」和大致的间隔写进 next；想完了就空着。
 
 只输出一行 JSON，不要别的：
-{"thought":"你想到的那件事","importance":1}
-importance 是 1-10：这件事对你有多重要。10 = 你会一直想它。`;
+{"thought":"你想到的那件事","importance":1,"next":{"in":60,"note":"留给自己的一句话"}}
+importance 是 1-10：这件事对你有多重要。10 = 你会一直想它。
+next 是你给自己留的：还会想，就定个时间（15–360 分钟）和一句「下次从哪儿接着想」。
+想完了、没什么可接的，就空着。`;
 }
 
 const MODE_ASK: Record<ThoughtMode, (ctx: ThinkContext) => string> = {
@@ -68,6 +73,7 @@ const MODE_ASK: Record<ThoughtMode, (ctx: ThinkContext) => string> = {
 export function buildMessages(mode: ThoughtMode, ctx: ThinkContext): { role: string; content: string }[] {
   const lines: string[] = [];
   lines.push(`（现在 ${ctx.now}。${ctx.silence ? `上次跟人说话是 ${ctx.silence}前。` : ''}）`);
+  if (ctx.lastNote) lines.push(`（上次你自己留了一句：${ctx.lastNote}）`);
   if (ctx.selfView) lines.push(`（你最近对自己的看法：${ctx.selfView}）`);
   if (ctx.memories.length) {
     lines.push('（你记得的事：');
@@ -164,15 +170,32 @@ export async function callModel(opts: ModelOptions, messages: { role: string; co
  * 把模型输出收成一条想法。
  * 小模型经常不守 JSON 格式（多一层 ```、前面加一句「好的」），所以逐级降级。
  */
-export function parseThought(raw: string): { text: string; importance: number } {
+export interface ParsedThought {
+  text: string;
+  importance: number;
+  next?: { in?: number; note?: string };
+}
+
+/** 她给自己留的那句：范围收进 15–360 分钟，note 超过 40 字截断。都不合法就当没留。 */
+export function parseNext(value: unknown): { in?: number; note?: string } | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const o = value as { in?: unknown; note?: unknown };
+  const inMin = clampNextIn(o.in);
+  const note = typeof o.note === 'string' && o.note.trim() ? clip(o.note.trim(), 40) : undefined;
+  if (inMin === undefined && !note) return undefined;
+  return { ...(inMin !== undefined ? { in: inMin } : {}), ...(note ? { note } : {}) };
+}
+
+export function parseThought(raw: string): ParsedThought {
   const src = String(raw ?? '').trim();
 
-  const tryJson = (s: string): { text: string; importance: number } | null => {
+  const tryJson = (s: string): ParsedThought | null => {
     try {
-      const o = JSON.parse(s) as { thought?: unknown; text?: unknown; importance?: unknown };
+      const o = JSON.parse(s) as { thought?: unknown; text?: unknown; importance?: unknown; next?: unknown };
       const text = String(o.thought ?? o.text ?? '').trim();
       if (!text) return null;
-      return { text, importance: clampImportance(o.importance) };
+      const next = parseNext(o.next);
+      return { text, importance: clampImportance(o.importance), ...(next ? { next } : {}) };
     } catch {
       return null;
     }
@@ -231,6 +254,9 @@ export async function thinkOnce(
       text: clip(parsed.text, 400),
       importance: parsed.importance,
       seeds,
+      // 她自己留的那句要带出去，不然解析了也白解析
+      ...(parsed.next?.in ? { nextIn: parsed.next.in } : {}),
+      ...(parsed.next?.note ? { nextNote: parsed.next.note } : {}),
       promptTokens: res.promptTokens,
       outputTokens: res.outputTokens,
     },

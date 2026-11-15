@@ -274,7 +274,8 @@ export class SelfAwarenessWorld implements World {
 
     const { mode, carry } = this.nextMode();
     const seeds = this.pickSeeds(mode, now);
-    const ctx = this.buildContext(core, now, seeds, carry);
+    const note = this.latestNote(now);
+    const ctx = this.buildContext(core, now, seeds, carry, note?.text);
 
     const started = Date.now();
     const res = await thinkOnce(
@@ -310,12 +311,12 @@ export class SelfAwarenessWorld implements World {
     this.budget.pendingImportance += thought.importance;
     this.budget.lastThoughtAt = thought.ts;
 
-    // 下次隔多久：由这次想的密度算，不是固定值
-    const gap = nextGapMinutes(
-      density(thought),
-      Number(cfg.minGapMin) || 25,
-      Number(cfg.maxGapMin) || 90,
-    );
+    // 下次隔多久：她自己说了就听她的，没说才按密度算
+    const herNext = Number(res.thought.nextIn);
+    const gap = Number.isFinite(herNext) && herNext > 0
+      ? herNext
+      : nextGapMinutes(density(thought), Number(cfg.minGapMin) || 25, Number(cfg.maxGapMin) || 90);
+    if (note) this.budget.lastNoteId = note.id;
     this.budget.nextDueAt = new Date(Date.now() + Math.round(gap * 60_000)).toISOString();
     saveBudget(this.dataDir, this.budget);
 
@@ -329,6 +330,7 @@ export class SelfAwarenessWorld implements World {
         mode: thought.mode,
         importance: thought.importance,
         gapMin: Math.round(gap),
+        byHer: Number.isFinite(herNext) && herNext > 0,
         ms: Date.now() - started,
       });
     } catch {
@@ -402,6 +404,22 @@ export class SelfAwarenessWorld implements World {
       this.lastActivityAt = 0;
     }
     return this.lastActivityAt;
+  }
+
+  /**
+   * 她上一条给自己留的话。超过 12 小时就不提了——她说「明早看看」，
+   * 现在都第二天晚上了，再提就是翻旧账。用过的记在 budget.lastNoteId，不重复递。
+   */
+  private latestNote(now: number): { id: string; text: string } | null {
+    const recent = this.pool.recent(6).reverse();
+    for (const t of recent) {
+      if (!t.nextNote) continue;
+      if (t.id === this.budget.lastNoteId) continue;
+      const at = Date.parse(t.ts) || 0;
+      if (!at || now - at > 12 * 3_600_000) continue;
+      return { id: t.id, text: t.nextNote };
+    }
+    return null;
   }
 
   /** 记忆核心的 state.json。没装记忆核心就返回 null，不报错。 */
@@ -545,6 +563,7 @@ export class SelfAwarenessWorld implements World {
     now: number,
     seeds: Seed[],
     carry?: string,
+    lastNote?: string,
   ): ThinkContext {
     const tz = this.tz();
     // 「11-15 23:30（深夜）」——只说时间她不知道那是深夜，会想出「下午出去走走」
@@ -573,6 +592,7 @@ export class SelfAwarenessWorld implements World {
       silence,
       memories,
       recent: this.pool.recent(3).map((t) => clip(t.text, 60)),
+      lastNote,
       focus: carry ? clip(carry, 50) : seeds[0] ? clip(seeds[0].text, 50) : undefined,
       carry: Boolean(carry),
       selfView: reflections.length ? clip(reflections.slice(-1)[0].text, 80) : undefined,
@@ -622,6 +642,8 @@ export class SelfAwarenessWorld implements World {
           text: t.text,
           importance: t.importance,
           carry: Boolean(t.carry),
+          nextNote: t.nextNote ?? null,
+          nextIn: t.nextIn ?? null,
           promptTokens: t.promptTokens ?? 0,
           outputTokens: t.outputTokens ?? 0,
         })),
