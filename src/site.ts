@@ -108,7 +108,8 @@ export class ThoughtSite {
       const now = Date.now();
       if (now - this.lastProbe < PROBE_GAP_MS) {
         rsp.writeHead(429, { 'content-type': 'application/json; charset=utf-8' });
-        rsp.end(JSON.stringify({ ok: false, ms: 0, error: '刚测过，等几秒再来' }));
+        // 带 throttled 标记：限流不是「接口不通」，前端别把它画成红色失败
+        rsp.end(JSON.stringify({ ok: false, throttled: true, ms: 0, error: '刚测过，等几秒再来' }));
         return;
       }
       this.lastProbe = now;

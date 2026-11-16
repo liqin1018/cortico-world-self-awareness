@@ -40,17 +40,33 @@
   .stat b { display: block; font-size: 19px; font-weight: 500; font-variant-numeric: tabular-nums; }
   .stat span { color: var(--dim); font-size: 11.5px; }
   .warn { color: #ffb3a7; }
-  .toolbar { display: flex; align-items: center; gap: 10px; margin: -8px 0 22px; flex-wrap: wrap; }
-  .btn {
-    background: transparent; border: 1px solid var(--line); color: var(--text);
-    padding: 5px 13px; border-radius: 7px; font-size: 12px; cursor: pointer;
-    font-family: inherit; transition: border-color .15s, color .15s;
+  .topline { display: flex; align-items: stretch; gap: 12px; margin: 18px 0 10px; }
+  .topline .stats { flex: 1; margin: 0; min-width: 0; }
+  .probe-card {
+    flex: none; width: 102px; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 9px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    color: var(--dim); font: inherit; font-size: 12.5px; letter-spacing: .05em;
+    cursor: pointer; padding: 0; transition: color .18s, border-color .18s, background .18s;
   }
-  .btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
-  .btn:disabled { opacity: .45; cursor: default; }
-  .probe { font-size: 12px; color: var(--dim); }
-  .probe.ok { color: var(--accent); }
-  .probe.bad { color: #ffb3a7; }
+  .probe-card:hover:not(:disabled) {
+    color: var(--accent); border-color: rgba(127, 227, 212, .45); background: rgba(127, 227, 212, .06);
+  }
+  .probe-card:disabled { cursor: default; }
+  .probe-card svg { width: 24px; height: 24px; display: block; }
+  .probe-card.testing { color: var(--accent); border-color: rgba(127, 227, 212, .4); }
+  .probe-card.testing svg { animation: pulse 1.1s ease-in-out infinite; }
+  .probe-card.ok { color: var(--accent); border-color: rgba(127, 227, 212, .5); background: rgba(127, 227, 212, .07); }
+  .probe-card.bad { color: #ffb3a7; border-color: rgba(255, 120, 100, .45); background: rgba(255, 90, 70, .06); }
+  @keyframes pulse { 0%, 100% { opacity: .35; transform: scale(.94); } 50% { opacity: 1; transform: scale(1.06); } }
+  .probe-msg {
+    margin: 0 0 22px; padding: 9px 14px; border-radius: 8px; font-size: 12.5px;
+    border: 1px solid var(--line); color: var(--dim); background: var(--panel);
+    animation: fadein .25s ease-out;
+  }
+  .probe-msg.ok { color: var(--accent); border-color: rgba(127, 227, 212, .3); background: rgba(127, 227, 212, .05); }
+  .probe-msg.bad { color: #ffb3a7; border-color: rgba(255, 120, 100, .3); background: rgba(255, 90, 70, .06); }
+  @keyframes fadein { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
   .err {
     margin: 0 0 20px; padding: 10px 14px; border-radius: 8px;
     border: 1px solid rgba(255, 120, 100, 0.3); background: rgba(255, 90, 70, 0.07);
@@ -103,11 +119,16 @@
     <span class="sub" id="sub">读取中…</span>
   </header>
 
-  <div class="stats" id="stats"></div>
-  <div class="toolbar">
-    <button class="btn" id="probe">测接口</button>
-    <span class="probe" id="probeResult"></span>
+  <div class="topline">
+    <div class="stats" id="stats"></div>
+    <button class="probe-card" id="probe" title="发一句「在吗」，看模型通不通">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M2 12h4l2.5-6 4 13 2.5-7h7"/>
+      </svg>
+      <span id="probeLabel">测接口</span>
+    </button>
   </div>
+  <div class="probe-msg" id="probeMsg" hidden></div>
   <div id="err"></div>
 
   <h2>想过的事</h2>
@@ -197,25 +218,54 @@ load();
 setInterval(load, 30000);
 
 const probeBtn = document.getElementById('probe');
-const probeOut = document.getElementById('probeResult');
+const probeLabel = document.getElementById('probeLabel');
+const probeMsg = document.getElementById('probeMsg');
+
 probeBtn.addEventListener('click', async () => {
   probeBtn.disabled = true;
-  probeOut.className = 'probe';
-  probeOut.textContent = '测中…';
+  probeBtn.className = 'probe-card testing';
+  probeLabel.textContent = '测中';
+  probeMsg.hidden = false;
+  probeMsg.className = 'probe-msg';
+  probeMsg.textContent = '正在发一句「在吗」…';
   try {
     const rsp = await fetch('/api/probe', { method: 'POST' });
     const r = await rsp.json();
-    probeOut.className = 'probe ' + (r.ok ? 'ok' : 'bad');
-    probeOut.textContent = r.ok
-      ? `通了 · ${r.model} · ${r.ms}ms`
-      : `失败 · ${r.error}`;
+    const ok = Boolean(r.ok);
+    if (r.throttled) {
+      // 刚测过，不是接口问题
+      probeBtn.className = 'probe-card';
+      probeLabel.textContent = '等一下';
+      probeMsg.className = 'probe-msg';
+      probeMsg.textContent = '刚才测过，隔十秒再点一次';
+    } else {
+      probeBtn.className = 'probe-card ' + (ok ? 'ok' : 'bad');
+      probeLabel.textContent = ok ? `通了 ${r.ms}ms` : '没通';
+      probeMsg.className = 'probe-msg ' + (ok ? 'ok' : 'bad');
+      probeMsg.textContent = ok
+        ? `接口正常 · ${r.model} · 往返 ${r.ms}ms`
+        : `接口不通 · ${r.error}`;
+    }
   } catch (e) {
-    probeOut.className = 'probe bad';
-    probeOut.textContent = '请求发不出去';
+    probeBtn.className = 'probe-card bad';
+    probeLabel.textContent = '没通';
+    probeMsg.className = 'probe-msg bad';
+    probeMsg.textContent = '请求发不出去，时间线服务可能已经停了';
   } finally {
-    setTimeout(() => { probeBtn.disabled = false; }, 3000);
+    setTimeout(() => {
+      probeBtn.disabled = false;
+      probeBtn.className = 'probe-card';
+      probeLabel.textContent = '测接口';
+      probeMsg.hidden = true;
+    }, 8000);
   }
 });
+
+// 带 #probe 打开就自动测一次：省得每次都要点（也方便截图看状态）
+if (location.hash === '#probe') probeBtn.click();
+
+// 带 #probe 打开就自动测一次：省得每次都要点（也方便截图看状态）
+if (location.hash === '#probe') probeBtn.click();
 </script>
 </body>
 </html>
