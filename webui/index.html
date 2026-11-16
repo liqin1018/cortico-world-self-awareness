@@ -292,7 +292,7 @@ function renderThoughts() {
   document.getElementById('list').innerHTML = groups.map((g) => `
     <section class="day"><div class="day-label">${dateLabel(g.ts)}</div><div class="timeline">
       ${g.items.map((t) => `<article class="item ${esc(t.mode)}${t.rest ? ' rest' : ''}">
-        <div class="meta"><span>${clock(t.ts)}</span><span class="mode">${esc(MODE_NAME[t.mode] || t.mode || '思绪')}</span>${t.phase ? `<span>${esc(t.phase)}</span>` : ''}${t.energy != null ? `<span>精力 ${t.energy}</span>` : ''}${dots(t.importance)}${t.carry ? '<span class="carry">接着上一条</span>' : ''}${t.rest ? '<span class="rest-tag">她先搁着了</span>' : ''}</div>
+        <div class="meta"><span>${clock(t.ts)}</span><span class="mode">${esc(MODE_NAME[t.mode] || t.mode || '思绪')}</span>${t.phase ? `<span>${esc(t.phase)}</span>` : ''}${t.energy != null ? `<span>精力 ${t.energy}</span>` : ''}${dots(t.importance)}${t.carry ? `<span class="carry">${(t.carryGapMin ?? 0) >= 360 ? '跨夜接着想' : '接着上一条'}</span>` : ''}${t.rest ? '<span class="rest-tag">她先搁着了</span>' : ''}</div>
         <div class="text">${esc(t.text)}</div>
         ${t.nextNote ? `<div class="note-line">留给下一次：${esc(t.nextNote)}${t.nextIn ? `<span>+${esc(t.nextIn)} MIN</span>` : ''}</div>` : ''}
       </article>`).join('')}

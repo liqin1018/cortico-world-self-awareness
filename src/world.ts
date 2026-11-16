@@ -25,6 +25,9 @@ import {
   loadBudget,
   nextGapMinutes,
   noteTtlMs,
+  CARRY_FRESH_MIN,
+  CARRY_MAX_AGE_MIN,
+  CARRY_MAX_DEPTH,
   REST_DEFAULT_MINUTES,
   rollDay,
   saveBudget,
@@ -298,10 +301,17 @@ export class SelfAwarenessWorld implements World {
       }
     }
 
-    const { mode, carry } = this.nextMode();
+    const { mode, carry, carryAgeMin, carryDepth } = this.nextMode();
     const seeds = this.pickSeeds(mode, now);
     const note = this.latestNote(now);
-    const ctx = this.buildContext(core, now, seeds, carry, note?.text);
+    const ctx = this.buildContext(
+      core,
+      now,
+      seeds,
+      carry,
+      note?.text,
+      carryAgeMin ? humanSpan(carryAgeMin * 60_000) : undefined,
+    );
 
     const started = Date.now();
     const res = await thinkOnce(
@@ -329,10 +339,13 @@ export class SelfAwarenessWorld implements World {
 
     this.fails = 0;
     this.lastError = '';
+    const carried = Boolean(carry) && res.thought.mode === mode;
     const thought = this.pool.add({
       ...res.thought,
       // 她还按建议往下接，才算「接着上一条」；自己换了方式，多半是换了件事
-      carry: Boolean(carry) && res.thought.mode === mode,
+      carry: carried,
+      ...(carried && carryAgeMin ? { carryGapMin: carryAgeMin } : {}),
+      ...(carried && carryDepth ? { carryDepth } : {}),
       // 把「她当时是什么样子」一起存下来：时间线以后能回看，不只是知道她想了什么
       ...(typeof core?.mood === 'number' ? { mood: Math.round(core.mood) } : {}),
       ...(typeof core?.energy === 'number' ? { energy: Math.round(core.energy) } : {}),
@@ -606,6 +619,7 @@ export class SelfAwarenessWorld implements World {
     seeds: Seed[],
     carry?: string,
     lastNote?: string,
+    carryAgo?: string,
   ): ThinkContext {
     const tz = this.tz();
     // 「11-15 23:30（深夜）」——只说时间她不知道那是深夜，会想出「下午出去走走」
@@ -637,6 +651,7 @@ export class SelfAwarenessWorld implements World {
       lastNote,
       focus: carry ? clip(carry, 50) : seeds[0] ? clip(seeds[0].text, 50) : undefined,
       carry: Boolean(carry),
+      carryAgo,
       selfView: reflections.length ? clip(reflections.slice(-1)[0].text, 80) : undefined,
       persona: String(this.cfg().personaNote ?? '').trim() || undefined,
     };
@@ -644,16 +659,36 @@ export class SelfAwarenessWorld implements World {
 
   /**
    * 模式轮换：七成按顺序，三成随机跳，免得形成「每个模式轮流打卡」的机械感。
-   * 另外三成概率接着上一条想下去——人想事情是连着的，不是十二件互不相干的小事。
+   *
+   * 接着上一条想：两小时内跟以前一样（想到一半就该接）；
+   * 隔夜的接续要严一点——必须是她自己留了话或说要歇着，才说明这件事还没完，
+   * 而且同一条线最多接两跳，第三跳强制换题（不然会反刍）。
    */
-  private nextMode(): { mode: ThoughtMode; carry?: string } {
+  private nextMode(rand: () => number = Math.random): {
+    mode: ThoughtMode;
+    carry?: string;
+    carryAgeMin?: number;
+    carryDepth?: number;
+  } {
     const last = this.pool.recent(1)[0];
-    const fresh = last && Date.now() - (Date.parse(last.ts) || 0) < 2 * 3_600_000;
-    if (fresh && Math.random() < 0.3) {
-      return { mode: 'reflect', carry: last.text };
+    const ageMin = last ? (Date.now() - (Date.parse(last.ts) || 0)) / 60_000 : Infinity;
+    const depth = Number(last?.carryDepth) || 0;
+    const leftOpen = Boolean(last && (last.nextNote || last.rest));
+    const canCarry =
+      Boolean(last)
+      && depth < CARRY_MAX_DEPTH
+      && (ageMin <= CARRY_FRESH_MIN || (ageMin <= CARRY_MAX_AGE_MIN && leftOpen));
+
+    if (canCarry && rand() < (ageMin <= CARRY_FRESH_MIN ? 0.3 : 0.55)) {
+      return {
+        mode: 'reflect',
+        carry: last!.text,
+        carryAgeMin: Math.max(1, Math.round(ageMin)),
+        carryDepth: depth + 1,
+      };
     }
-    if (Math.random() < 0.3) {
-      return { mode: THOUGHT_MODES[Math.floor(Math.random() * THOUGHT_MODES.length)] };
+    if (rand() < 0.3) {
+      return { mode: THOUGHT_MODES[Math.floor(rand() * THOUGHT_MODES.length)] };
     }
     const m = THOUGHT_MODES[this.modeCursor % THOUGHT_MODES.length];
     this.modeCursor += 1;
@@ -730,6 +765,8 @@ export class SelfAwarenessWorld implements World {
           text: t.text,
           importance: t.importance,
           carry: Boolean(t.carry),
+          carryGapMin: typeof t.carryGapMin === 'number' ? t.carryGapMin : null,
+          carryDepth: typeof t.carryDepth === 'number' ? t.carryDepth : null,
           nextNote: t.nextNote ?? null,
           nextIn: t.nextIn ?? null,
           rest: Boolean(t.rest),

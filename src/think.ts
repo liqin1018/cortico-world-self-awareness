@@ -27,6 +27,8 @@ export interface ThinkContext {
   lastNote?: string;
   /** 这次是接着上一条想下去，不是新起一件 */
   carry?: boolean;
+  /** 上一条是多久前写的（「8 小时」「两天」）。跨夜时得让她知道隔了多久。 */
+  carryAgo?: string;
 }
 
 function systemPrompt(persona?: string): string {
@@ -107,7 +109,8 @@ export function buildMessages(mode: ThoughtMode, ctx: ThinkContext): { role: str
   lines.push('');
   if (ctx.carry && ctx.focus) {
     // 接着上一条想：这时候别让她换题，除非她自己要换
-    lines.push(`上次你想到「${ctx.focus}」，没想完。接着往下想——说新的一层，别把上次那句重说一遍。`);
+    const when = ctx.carryAgo ? `（${ctx.carryAgo}前）` : '';
+    lines.push(`你上次写到「${ctx.focus}」${when}，没写完。接着往下想——说新的一层，别把上次那句重说一遍。`);
     lines.push(`想换件事也行；换就换，mode 里写你这次想用的方式。`);
   } else {
     lines.push('这次没人跟你说话。想怎么想都行：');

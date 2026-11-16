@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SELF_AWARENESS_DEFAULTS, resolveEndpoint, type SelfAwarenessConfig } from '../src/config.ts';
 import { density, nextGapMinutes, noteTtlMs, ThoughtPool, REFLECT_THRESHOLD } from '../src/pool.ts';
-import { parseThought } from '../src/think.ts';
+import { parseThought, buildMessages } from '../src/think.ts';
 import { SelfAwarenessWorld } from '../src/world.ts';
 
 let bad = 0;
@@ -449,6 +449,49 @@ await (async () => {
   ok(Boolean(data.thoughts[0]?.phase), '66) 时间线能回看当时是哪个时段');
 
   await world.stop();
+}
+
+/* 14) 跨夜接续：只接留过话的、最多两跳 */
+{
+  const { world, root } = makeWorld({ enabled: true });
+  const dir = join(root, 'self-awareness');
+  mkdirSync(dir, { recursive: true });
+  const hoursAgo = (h: number) => new Date(Date.now() - h * 3_600_000).toISOString();
+  const seed = (h: number, extra: Record<string, unknown> = {}) => ({
+    id: `x${h}`, ts: hoursAgo(h), mode: 'wonder', text: '昨晚想到一半的事', importance: 5, seeds: [], ...extra,
+  });
+  const write = (list: unknown[]) => {
+    writeFileSync(join(dir, 'thoughts.jsonl'), list.map((x) => JSON.stringify(x)).join('\n') + '\n', 'utf8');
+    // 池子第一次读过就常驻缓存，直接改文件得让它重读
+    (world as unknown as { pool: { cache: unknown } }).pool.cache = null;
+  };
+  const nm = (world as unknown as {
+    nextMode(rand: () => number): { carry?: string; carryAgeMin?: number; carryDepth?: number };
+  }).nextMode.bind(world);
+
+  write([seed(8, { nextNote: '明早再看' })]);
+  const a = nm(() => 0);
+  ok(Boolean(a.carry) && (a.carryAgeMin ?? 0) > 470, `67) 隔夜但留过话，可以接着想（${a.carryAgeMin} 分钟前）`);
+
+  write([seed(8)]);
+  ok(!nm(() => 0).carry, '68) 隔夜且没留话，当成想完了');
+
+  write([seed(1, { nextNote: '还在想', carryDepth: 2 })]);
+  ok(!nm(() => 0).carry, '69) 已经接了两跳，强制换题');
+
+  write([seed(26, { nextNote: '明早再看' })]);
+  ok(!nm(() => 0).carry, '70) 超过 20 小时不再翻出来');
+
+  write([seed(1)]);
+  ok(Boolean(nm(() => 0).carry), '71) 两小时内仍然可以接着想');
+
+  const msgs = buildMessages('reflect', {
+    now: '11-17 08:00（上午）', silence: '', memories: [], recent: [],
+    focus: '那件事', carry: true, carryAgo: '8 小时',
+  });
+  const user = msgs[1]?.content ?? '';
+  ok(user.includes('你上次写到') && user.includes('8 小时前'), '72) 跨夜接续说「写到」并带上隔了多久');
+  ok(!user.includes('你想到「'), '73) 不说「你想过」，避免冒充回忆');
 }
 
 console.log(bad ? `\n${bad} 项失败（共 ${total}）` : `\n全部通过（共 ${total} 项）`);

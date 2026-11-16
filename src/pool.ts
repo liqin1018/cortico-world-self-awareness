@@ -26,6 +26,10 @@ export interface Thought {
   outputTokens?: number;
   /** 这条是接着上一条想下去的，不是新起一件 */
   carry?: boolean;
+  /** 接着想时，上一条是多久前写的（分钟）。隔着夜就是几百分钟。 */
+  carryGapMin?: number;
+  /** 同一条线已经接了几跳。到上限就强制换题，防止反茭。 */
+  carryDepth?: number;
   /** 她自己定的下次间隔（分钟）。没写就按密度算。 */
   nextIn?: number;
   /** 她给自己留的话：「明早再看看那个帖子」。下次会原样递回去。 */
@@ -107,6 +111,8 @@ export class ThoughtPool {
       ...(t.promptTokens ? { promptTokens: t.promptTokens } : {}),
       ...(t.outputTokens ? { outputTokens: t.outputTokens } : {}),
       ...(t.carry ? { carry: true } : {}),
+      ...(typeof t.carryGapMin === 'number' ? { carryGapMin: t.carryGapMin } : {}),
+      ...(typeof t.carryDepth === 'number' ? { carryDepth: t.carryDepth } : {}),
       ...(t.nextIn ? { nextIn: t.nextIn } : {}),
       ...(t.nextNote ? { nextNote: t.nextNote } : {}),
       ...(t.rest ? { rest: true } : {}),
@@ -225,6 +231,16 @@ export function noteTtlMs(t: { nextIn?: number }): number {
   const byHer = (Number(t.nextIn) || 0) * 60_000 + 3_600_000;
   return Math.min(NOTE_TTL_MAX_MS, Math.max(NOTE_TTL_MS, byHer));
 }
+
+/**
+ * 跨天接续的三道闸。
+ * 只在「同一天内」能接着想的旧限制，让隔夜的心事第二天只能从头再讲一遍；
+ * 放开到 20 小时就够覆盖一夜，再长就变成翻旧账。
+ * 同时必须是她自己留了话（或说要歇着）——没留就是真想完了。
+ */
+export const CARRY_FRESH_MIN = 120;
+export const CARRY_MAX_AGE_MIN = 1200;
+export const CARRY_MAX_DEPTH = 2;
 
 /** 累计重要度到这条线就该往上抽象一层了（写一条 reflection）。 */
 export const REFLECT_THRESHOLD = 24;
