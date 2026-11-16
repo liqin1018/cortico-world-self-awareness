@@ -40,6 +40,17 @@
   .stat b { display: block; font-size: 19px; font-weight: 500; font-variant-numeric: tabular-nums; }
   .stat span { color: var(--dim); font-size: 11.5px; }
   .warn { color: #ffb3a7; }
+  .toolbar { display: flex; align-items: center; gap: 10px; margin: -8px 0 22px; flex-wrap: wrap; }
+  .btn {
+    background: transparent; border: 1px solid var(--line); color: var(--text);
+    padding: 5px 13px; border-radius: 7px; font-size: 12px; cursor: pointer;
+    font-family: inherit; transition: border-color .15s, color .15s;
+  }
+  .btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  .btn:disabled { opacity: .45; cursor: default; }
+  .probe { font-size: 12px; color: var(--dim); }
+  .probe.ok { color: var(--accent); }
+  .probe.bad { color: #ffb3a7; }
   .err {
     margin: 0 0 20px; padding: 10px 14px; border-radius: 8px;
     border: 1px solid rgba(255, 120, 100, 0.3); background: rgba(255, 90, 70, 0.07);
@@ -93,6 +104,10 @@
   </header>
 
   <div class="stats" id="stats"></div>
+  <div class="toolbar">
+    <button class="btn" id="probe">测接口</button>
+    <span class="probe" id="probeResult"></span>
+  </div>
   <div id="err"></div>
 
   <h2>想过的事</h2>
@@ -180,6 +195,27 @@ async function load() {
 
 load();
 setInterval(load, 30000);
+
+const probeBtn = document.getElementById('probe');
+const probeOut = document.getElementById('probeResult');
+probeBtn.addEventListener('click', async () => {
+  probeBtn.disabled = true;
+  probeOut.className = 'probe';
+  probeOut.textContent = '测中…';
+  try {
+    const rsp = await fetch('/api/probe', { method: 'POST' });
+    const r = await rsp.json();
+    probeOut.className = 'probe ' + (r.ok ? 'ok' : 'bad');
+    probeOut.textContent = r.ok
+      ? `通了 · ${r.model} · ${r.ms}ms`
+      : `失败 · ${r.error}`;
+  } catch (e) {
+    probeOut.className = 'probe bad';
+    probeOut.textContent = '请求发不出去';
+  } finally {
+    setTimeout(() => { probeBtn.disabled = false; }, 3000);
+  }
+});
 </script>
 </body>
 </html>

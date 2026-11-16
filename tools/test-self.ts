@@ -99,7 +99,8 @@ const makeWorld = (cfg: Partial<SelfAwarenessConfig>, coreState?: Record<string,
   if (coreState) writeFileSync(join(core, 'state.json'), JSON.stringify(coreState), 'utf8');
 
   const world = new SelfAwarenessWorld({
-    cfg: { ...SELF_AWARENESS_DEFAULTS, provider: 'custom', baseUrl: 'http://127.0.0.1:9/v1', model: 'fake', apiKey: 'k', ...cfg } as never,
+    // probeOnStart 会额外发一次 fetch，污染「调了几次模型」这类断言
+    cfg: { ...SELF_AWARENESS_DEFAULTS, probeOnStart: false, provider: 'custom', baseUrl: 'http://127.0.0.1:9/v1', model: 'fake', apiKey: 'k', ...cfg } as never,
     dataDir: root,
     timezone: 'Asia/Shanghai',
     botDir: root,
@@ -340,6 +341,57 @@ await (async () => {
   ok(gap >= 20 && gap <= 45, `44) 她没留话 → 按密度算，落在 25-35 附近（实际 ${Math.round(gap)}）`);
 
   globalThis.fetch = realFetch;
+  await world.stop();
+}
+
+/* 10) 测接口：不写文件、不占次数、不动 lastError */
+{
+  const { world } = makeWorld({ enabled: true, apiKey: 'k', provider: 'custom', baseUrl: 'http://127.0.0.1:9/v1', model: 'm' });
+  const realFetch = globalThis.fetch;
+  await world.start(host() as never);
+
+  const before = world.snapshot() as { today: { count: number; tokens: number }; totalThoughts: number; error: string | null };
+
+  globalThis.fetch = (async () => ({
+    ok: true,
+    json: async () => ({ choices: [{ message: { content: '好' } }], usage: { prompt_tokens: 12, completion_tokens: 2 } }),
+  })) as never;
+  const good = await (world as unknown as { probe(): Promise<{ ok: boolean; ms: number; model?: string }> }).probe();
+  ok(good.ok && good.model === 'm', '45) 接口通了，返回模型名');
+
+  const mid = world.snapshot() as { today: { count: number; tokens: number }; totalThoughts: number; error: string | null };
+  ok(mid.today.count === before.today.count, '46) 测接口不占今天的次数');
+  ok(mid.today.tokens === before.today.tokens, '47) 测接口不计 token');
+  ok(mid.totalThoughts === before.totalThoughts, '48) 测接口不产生想法');
+  ok(mid.error === null, '49) 测试成功也不动 lastError');
+
+  globalThis.fetch = (async () => ({ ok: false, status: 401, text: async () => 'bad key' })) as never;
+  const bad = await (world as unknown as { probe(): Promise<{ ok: boolean; error?: string }> }).probe();
+  ok(!bad.ok && Boolean(bad.error), '50) 接口不通时返回错误');
+  const after = world.snapshot() as { error: string | null };
+  ok(after.error === null, '51) 手点失败不污染 lastError（不然状态灯会一直红着）');
+
+  globalThis.fetch = realFetch;
+  await world.stop();
+}
+
+/* 11) 睡着时状态灯是 loading，不是「在跑」也不是「出错」 */
+{
+  const { world } = makeWorld({ enabled: true, apiKey: 'k', provider: 'custom', baseUrl: 'http://x/v1', model: 'm' });
+  await world.start(host() as never);
+  const dir = (world as unknown as { coreDir(): string | null }).coreDir();
+  ok(Boolean(dir), '52) 记忆核心目录能自动定位（同级或内部都试）');
+
+  const mkdirSync = (await import('node:fs')).mkdirSync;
+  const writeFileSync = (await import('node:fs')).writeFileSync;
+  mkdirSync(String(dir), { recursive: true });
+  writeFileSync(join(String(dir), 'state.json'), JSON.stringify({
+    sleeping: true, energy: 12, mood: 50, activity: '睡觉', location: '房间', lastTalkAt: new Date().toISOString(),
+  }), 'utf8');
+
+  const lamp = (world.webUi().lamps ?? [])[0];
+  ok(lamp?.state === 'loading', '53) 睡着 → 灯是 loading（不是在跑，也不是出错）');
+  ok(String(lamp?.hint ?? '').includes('睡着'), '54) 提示里说清楚她睡着了');
   await world.stop();
 }
 

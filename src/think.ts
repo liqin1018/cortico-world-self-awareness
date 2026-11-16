@@ -160,7 +160,19 @@ export async function callModel(opts: ModelOptions, messages: { role: string; co
     };
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
-    return { ok: false, reason: controller.signal.aborted ? '超时' : msg };
+    if (controller.signal.aborted) return { ok: false, reason: '超时' };
+    // fetch 的 message 常常只有「fetch failed」，真正的原因在 cause.code 里
+    const code = (error as { cause?: { code?: string; message?: string } })?.cause?.code;
+    const detail = (error as { cause?: { message?: string } })?.cause?.message;
+    const hint = code === 'ECONNREFUSED'
+      ? '连不上这个地址（服务没开或端口不对）'
+      : code === 'ENOTFOUND'
+        ? '域名解析不了（地址写错了）'
+        : code === 'ETIMEDOUT' || code === 'UND_ERR_CONNECT_TIMEOUT'
+          ? '连不上（超时）'
+          : '';
+    const tail = [code, hint].filter(Boolean).join('：');
+    return { ok: false, reason: tail ? `${msg}（${tail}）` : (detail ? `${msg}（${clip(detail, 60)}）` : msg) };
   } finally {
     clearTimeout(timer);
   }

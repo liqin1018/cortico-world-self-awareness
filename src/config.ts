@@ -24,6 +24,8 @@ export interface SelfAwarenessConfig {
   temperature: number;
   /** 一句话交代她是谁，写进思考的上下文。留空就只按记忆来。 */
   personaNote: string;
+  /** 启动时 ping 一次接口，配完立刻知道对不对 */
+  probeOnStart: boolean;
   /** 本地时间线页面 */
   siteEnabled: boolean;
   sitePort: number;
@@ -54,6 +56,7 @@ export const SELF_AWARENESS_DEFAULTS: SelfAwarenessConfig = {
   maxOutputTokens: 220,
   temperature: 0.95,
   personaNote: '',
+  probeOnStart: true,
   siteEnabled: true,
   sitePort: 7802,
   memoryCoreDir: '',
@@ -169,6 +172,12 @@ const RAW_GROUP: ConfigGroup = {
         default: '',
         'x-hot': true,
       } as never,
+      'worlds.self-awareness.probeOnStart': {
+        type: 'boolean',
+        title: '启动时测一次接口',
+        description: 'World 重启时顺手 ping 一下模型，配错了立刻能在状态灯上看到，不用等她想第一件事。一次约 30-100 token。',
+        default: true,
+      },
       'worlds.self-awareness.siteEnabled': {
         type: 'boolean',
         title: '本地时间线页面',
@@ -209,6 +218,7 @@ const SETTINGS_ORDER = [
   'worlds.self-awareness.maxOutputTokens',
   'worlds.self-awareness.temperature',
   'worlds.self-awareness.personaNote',
+  'worlds.self-awareness.probeOnStart',
   'worlds.self-awareness.siteEnabled',
   'worlds.self-awareness.sitePort',
   'worlds.self-awareness.memoryCoreDir',

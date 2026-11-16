@@ -102,7 +102,10 @@ export class SelfAwarenessWorld implements World {
     const base = typeof ctx.dataDir === 'string' && ctx.dataDir ? ctx.dataDir : '.';
     this.dataDir = join(base, 'self-awareness');
     this.pool = new ThoughtPool(this.dataDir);
-    this.site = new ThoughtSite({ data: () => this.siteData() });
+    this.site = new ThoughtSite({
+      data: () => this.siteData(),
+      probe: () => this.probe(),
+    });
     this.budget = loadBudget(this.dataDir);
     const last = this.pool.all().slice(-1)[0];
     if (last) this.lastSnapshot = { ts: last.ts, text: last.text, mode: last.mode };
@@ -126,23 +129,29 @@ export class SelfAwarenessWorld implements World {
     const cfg = this.cfg();
     const endpoint = resolveEndpoint(cfg);
     const next = this.budget.nextDueAt ? formatLocal(this.budget.nextDueAt, this.tz()).slice(11, 16) : '未安排';
-    const last = this.lastSnapshot ? clip(this.lastSnapshot.text, 18) : '';
+    const core = this.readCoreState();
+    // 睡着不是错误，但也别显示成「在跑」——不然分不清她是睡了还是挂了
+    const dozing = Boolean(cfg.sleepSilent && core?.sleeping);
+    const bad = this.lastError ?? this.startupNote;
+    const state: 'online' | 'loading' | 'error' | 'offline' = bad
+      ? 'error'
+      : dozing
+        ? 'loading'
+        : cfg.enabled && endpoint.model
+          ? 'online'
+          : 'offline';
+    const hint = bad
+      ? clip(bad, 40)
+      : !cfg.enabled
+        ? '已关闭'
+        : !endpoint.model
+          ? '还没配模型'
+          : dozing
+            ? `睡着了（精力 ${Math.round(Number(core?.energy) || 0)}），醒了接着想`
+            : `今天想过 ${this.budget.count} 次`;
     return {
       label: '自我意识',
-      lamps: [
-        {
-          label: '自我意识',
-          // 出错要能一眼看见：不然 key 失效了还以为它在正常工作
-          state: this.lastError ? 'offline' : cfg.enabled && endpoint.model ? 'online' : 'offline',
-          hint: this.lastError
-            ? `出错：${clip(this.lastError, 30)}`
-            : !cfg.enabled
-              ? '已关闭'
-              : !endpoint.model
-                ? '还没配模型'
-                : `今天想过 ${this.budget.count} 次`,
-        },
-      ],
+      lamps: [{ label: '自我意识', state, hint }],
       badges: [
         { label: '今天想过', value: `${this.budget.count} 次` },
         { label: '下次', value: next },
@@ -176,6 +185,21 @@ export class SelfAwarenessWorld implements World {
       });
     } catch {
       // 日志失败不影响挂载
+    }
+    if (cfg.probeOnStart) {
+      // 不 await：启动不该为了一个 ping 卡住
+      void this.probe().then((r) => {
+        this.startupNote = r.ok ? null : `启动自检失败：${r.error}`;
+        if (!r.ok) {
+          try {
+            host.log?.warn?.(`[self-awareness] 启动自检失败：${r.error}`);
+          } catch {
+            // ignore
+          }
+        }
+      }).catch(() => {
+        this.startupNote = null;
+      });
     }
     if (cfg.siteEnabled) {
       const origin = await this.site.start(cfg.sitePort).catch(() => null);
@@ -441,8 +465,12 @@ export class SelfAwarenessWorld implements World {
     if (explicit) return existsSync(explicit) ? explicit : null;
     const base = typeof this.ctx.dataDir === 'string' ? this.ctx.dataDir : '';
     if (!base) return null;
-    const guess = join(base, 'memory-core');
-    return existsSync(guess) ? guess : null;
+    // 宿主给的 dataDir 是 <botData>/self-awareness，记忆核心在 **同级** 的 memory-core。
+    // 但测试和手工跑时常常直接传 <botData>，所以两条都试——只认一条会静默读不到卡片。
+    for (const guess of [join(base, '..', 'memory-core'), join(base, 'memory-core')]) {
+      if (existsSync(guess)) return guess;
+    }
+    return null;
   }
 
   private cards(): CardLite[] {
@@ -619,6 +647,36 @@ export class SelfAwarenessWorld implements World {
   }
 
   // ---- 给状态页看 ----
+
+  /**
+   * 手测一次接口通不通。
+   *
+   * 只发一句「在吗」拿一个回复——**不写任何文件、不占次数、不动 lastError**。
+   * 手点测试失败是查询行为，不该让状态灯一直红着。
+   */
+  async probe(): Promise<{ ok: boolean; ms: number; model?: string; error?: string }> {
+    const cfg = this.cfg();
+    const endpoint = resolveEndpoint(cfg);
+    if (!endpoint.model) return { ok: false, ms: 0, error: '还没选模型' };
+    if (endpoint.needsKey && !String(cfg.apiKey ?? '').trim()) return { ok: false, ms: 0, error: '还没填密钥' };
+    const started = Date.now();
+    const res = await callModel(
+      {
+        baseUrl: endpoint.baseUrl,
+        model: endpoint.model,
+        apiKey: String(cfg.apiKey ?? '').trim(),
+        maxTokens: 400,
+        temperature: 0,
+      },
+      [
+        { role: 'system', content: '只回一个字：好' },
+        { role: 'user', content: '在吗' },
+      ],
+    );
+    const ms = Date.now() - started;
+    if (!res.ok) return { ok: false, ms, error: res.reason ?? '未知错误' };
+    return { ok: true, ms, model: endpoint.model };
+  }
 
   /** 时间线页面要的数据：倒序、只给最近 60 条。 */
   private siteData(): Record<string, unknown> {

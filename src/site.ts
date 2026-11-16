@@ -13,13 +13,26 @@ const HOST = '127.0.0.1';
 /** 端口被占就往后找几个，别让插件因为端口冲突起不来。 */
 const PORT_TRIES = 12;
 
+export interface ProbeResult {
+  ok: boolean;
+  ms: number;
+  model?: string;
+  error?: string;
+}
+
 export interface SiteHooks {
   data(): unknown;
+  /** 手点「测接口」时调。不写文件、不占额度。 */
+  probe?(): Promise<ProbeResult>;
 }
+
+/** 手点测接口的最小间隔：防止狂点把额度烧了。 */
+const PROBE_GAP_MS = 10_000;
 
 export class ThoughtSite {
   private server: Server | null = null;
   private listening = 0;
+  private lastProbe = 0;
   private readonly hooks: SiteHooks;
 
   constructor(hooks: SiteHooks) {
@@ -87,6 +100,35 @@ export class ThoughtSite {
       return;
     }
     const url = new URL(req.url ?? '/', `http://${HOST}`);
+    if (url.pathname === '/api/probe') {
+      if (req.method !== 'POST') {
+        rsp.writeHead(405, { allow: 'POST' }).end('只接受 POST');
+        return;
+      }
+      const now = Date.now();
+      if (now - this.lastProbe < PROBE_GAP_MS) {
+        rsp.writeHead(429, { 'content-type': 'application/json; charset=utf-8' });
+        rsp.end(JSON.stringify({ ok: false, ms: 0, error: '刚测过，等几秒再来' }));
+        return;
+      }
+      this.lastProbe = now;
+      const probe = this.hooks.probe;
+      if (!probe) {
+        rsp.writeHead(501, { 'content-type': 'application/json; charset=utf-8' });
+        rsp.end(JSON.stringify({ ok: false, ms: 0, error: '这个版本不支持自检' }));
+        return;
+      }
+      void probe()
+        .then((result) => {
+          rsp.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+          rsp.end(JSON.stringify(result));
+        })
+        .catch((error: unknown) => {
+          rsp.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+          rsp.end(JSON.stringify({ ok: false, ms: 0, error: error instanceof Error ? error.message : String(error) }));
+        });
+      return;
+    }
     if (url.pathname === '/api/data') {
       let body = '';
       try {
