@@ -24,6 +24,8 @@ import {
   density,
   loadBudget,
   nextGapMinutes,
+  noteTtlMs,
+  REST_DEFAULT_MINUTES,
   rollDay,
   saveBudget,
   type BudgetState,
@@ -327,7 +329,15 @@ export class SelfAwarenessWorld implements World {
 
     this.fails = 0;
     this.lastError = '';
-    const thought = this.pool.add({ ...res.thought, carry: Boolean(carry) });
+    const thought = this.pool.add({
+      ...res.thought,
+      // 她还按建议往下接，才算「接着上一条」；自己换了方式，多半是换了件事
+      carry: Boolean(carry) && res.thought.mode === mode,
+      // 把「她当时是什么样子」一起存下来：时间线以后能回看，不只是知道她想了什么
+      ...(typeof core?.mood === 'number' ? { mood: Math.round(core.mood) } : {}),
+      ...(typeof core?.energy === 'number' ? { energy: Math.round(core.energy) } : {}),
+      phase: timeOfDay(now, this.tz()),
+    });
     this.lastSnapshot = { ts: thought.ts, text: thought.text, mode: thought.mode };
 
     this.budget.count += 1;
@@ -335,11 +345,13 @@ export class SelfAwarenessWorld implements World {
     this.budget.pendingImportance += thought.importance;
     this.budget.lastThoughtAt = thought.ts;
 
-    // 下次隔多久：她自己说了就听她的，没说才按密度算
+    // 下次隔多久：她说「先搁着」就按她的长间隔，其余听她自己定的，没定才按密度算
     const herNext = Number(res.thought.nextIn);
     const gap = Number.isFinite(herNext) && herNext > 0
       ? herNext
-      : nextGapMinutes(density(thought), Number(cfg.minGapMin) || 25, Number(cfg.maxGapMin) || 90);
+      : thought.rest
+        ? REST_DEFAULT_MINUTES
+        : nextGapMinutes(density(thought), Number(cfg.minGapMin) || 25, Number(cfg.maxGapMin) || 90);
     if (note) this.budget.lastNoteId = note.id;
     this.budget.nextDueAt = new Date(Date.now() + Math.round(gap * 60_000)).toISOString();
     saveBudget(this.dataDir, this.budget);
@@ -355,6 +367,7 @@ export class SelfAwarenessWorld implements World {
         importance: thought.importance,
         gapMin: Math.round(gap),
         byHer: Number.isFinite(herNext) && herNext > 0,
+        rest: Boolean(thought.rest),
         ms: Date.now() - started,
       });
     } catch {
@@ -435,12 +448,13 @@ export class SelfAwarenessWorld implements World {
    * 现在都第二天晚上了，再提就是翻旧账。用过的记在 budget.lastNoteId，不重复递。
    */
   private latestNote(now: number): { id: string; text: string } | null {
-    const recent = this.pool.recent(6).reverse();
+    const recent = this.pool.recent(12).reverse();
     for (const t of recent) {
       if (!t.nextNote) continue;
       if (t.id === this.budget.lastNoteId) continue;
       const at = Date.parse(t.ts) || 0;
-      if (!at || now - at > 12 * 3_600_000) continue;
+      // 便签能存多久，跟着她自己定的间隔走（以前硬 12 小时，"明早再看"会直接丢）
+      if (!at || now - at > noteTtlMs(t)) continue;
       return { id: t.id, text: t.nextNote };
     }
     return null;
@@ -688,6 +702,22 @@ export class SelfAwarenessWorld implements World {
       today: { count: this.budget.count, tokens: this.budget.tokens },
       limit: { count: Number(cfg.dailyLimit) || 0, tokens: Number(cfg.dailyTokenBudget) || 0 },
       nextDueAt: this.budget.nextDueAt ?? null,
+      // 她说「先搁着」的话，页面就别再写「等下一次思考」了——她是在歇，不是卡住了
+      resting: (() => {
+        const last = this.pool.recent(1)[0];
+        return last?.rest ? { at: last.ts, until: this.budget.nextDueAt ?? null } : null;
+      })(),
+      // 给页面用的「当前那张便签」：过期的不算，免得侧栏挂着三天前的话
+      note: (() => {
+        // 便签有效期现在能到 36 小时，往回多看几条，别因为条数少就漏了它
+        for (const t of this.pool.recent(12).reverse()) {
+          if (!t.nextNote) continue;
+          const at = Date.parse(t.ts) || 0;
+          if (!at || Date.now() - at > noteTtlMs(t)) continue;
+          return { text: t.nextNote, in: t.nextIn ?? null, at: t.ts, mode: t.mode };
+        }
+        return null;
+      })(),
       totalThoughts: this.pool.all().length,
       thoughts: this.pool
         .all()
@@ -702,6 +732,10 @@ export class SelfAwarenessWorld implements World {
           carry: Boolean(t.carry),
           nextNote: t.nextNote ?? null,
           nextIn: t.nextIn ?? null,
+          rest: Boolean(t.rest),
+          mood: typeof t.mood === 'number' ? t.mood : null,
+          energy: typeof t.energy === 'number' ? t.energy : null,
+          phase: t.phase ?? null,
           promptTokens: t.promptTokens ?? 0,
           outputTokens: t.outputTokens ?? 0,
         })),

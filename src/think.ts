@@ -5,7 +5,7 @@
  * 全部用「你就是她」的第二人称写提示词——用第三人称会写成分析报告。
  */
 import type { Thought, ThoughtMode } from './pool.ts';
-import { clampImportance, clampNextIn, density } from './pool.ts';
+import { clampImportance, clampNextIn, clampRestIn, density } from './pool.ts';
 import { clip } from './time.ts';
 
 export interface ThinkContext {
@@ -39,21 +39,38 @@ ${persona ? `你是谁：${persona}\n` : ''}
 - 别汇报工作，别复述别人交给你做的事。独处时想的不是待办。
 - 想不通就想不通，可以停在半路。人独处时大部分念头都没有结论。
 - 不要提「用户」「对话」「模型」「AI」「记忆」「记录」「卡片」这些词。
-- 想完之后，留一句「下次从哪儿接着想」和大致的间隔写进 next；想完了就空着。
+- 用什么方式想，你自己挑：回看 / 走神 / 打算 / 琢磨 / 综合。
+- 想完之后，留一句「下次从哪儿接着想」和大致的间隔写进 next。
+- 真的不想了、想搁着，就写 "rest":true，间隔可以长到一天。
 
 只输出一行 JSON，不要别的：
-{"thought":"你想到的那件事","importance":1,"next":{"in":60,"note":"留给自己的一句话"}}
+{"thought":"你想到的那件事","importance":1,"mode":"wonder","next":{"in":60,"note":"留给自己的一句话"},"rest":false}
+mode 只能填：reflect（回看以前的事）/ wonder（没缘由地走神）/ plan（打算接下来做什么）/ doubt（琢磨一件没想明白的）/ synthesize（把两件看着不相干的事连起来）。
 importance 是 1-10：这件事对你有多重要。10 = 你会一直想它。
-next 是你给自己留的：还会想，就定个时间（15–360 分钟）和一句「下次从哪儿接着想」。
+next 是你给自己留的：还会想，就定个时间（15–360 分钟；写了 rest 可以到 1440）和一句「下次从哪儿接着想」。
 想完了、没什么可接的，就空着。`;
 }
+
+const MODE_LABEL: Record<ThoughtMode, string> = {
+  reflect: '回看',
+  wonder: '走神',
+  plan: '打算',
+  doubt: '琢磨',
+  synthesize: '综合',
+};
+
+/** 把五种方式摆给她选，不是替她定。 */
+const MODE_MENU = [
+  '· 回看：想起以前的一件事，回头看它',
+  '· 走神：手上没在做什么，脑子飘走了',
+  '· 打算：想自己接下来要做什么（不是待办清单）',
+  '· 琢磨：一件一直没想明白的事，再想一次',
+  '· 综合：把两件看着没关系的事连起来看',
+].join('\n');
 
 const MODE_ASK: Record<ThoughtMode, (ctx: ThinkContext) => string> = {
   reflect: (ctx) => {
     if (!ctx.focus) return '你想起了以前的一件事。现在回头看它，感觉和当时一样吗？';
-    if (ctx.carry) {
-      return `你上次想到「${ctx.focus}」，没想完。接着往下想——说新的一层，别把上次那句重说一遍。`;
-    }
     return `你想起了这件事：「${ctx.focus}」。现在回头看它，感觉和当时一样吗？`;
   },
   wonder: () => '你手上没在做什么，脑子飘走了。飘到哪算哪，不用有理由。',
@@ -88,7 +105,17 @@ export function buildMessages(mode: ThoughtMode, ctx: ThinkContext): { role: str
     lines.push('（你最近没想过什么。）');
   }
   lines.push('');
-  lines.push(MODE_ASK[mode](ctx));
+  if (ctx.carry && ctx.focus) {
+    // 接着上一条想：这时候别让她换题，除非她自己要换
+    lines.push(`上次你想到「${ctx.focus}」，没想完。接着往下想——说新的一层，别把上次那句重说一遍。`);
+    lines.push(`想换件事也行；换就换，mode 里写你这次想用的方式。`);
+  } else {
+    lines.push('这次没人跟你说话。想怎么想都行：');
+    lines.push(MODE_MENU);
+    if (ctx.focus) lines.push(`（手边现成的事：「${ctx.focus}」，想从这儿起头也行，不想用也行。）`);
+    lines.push(`这会儿更像「${MODE_LABEL[mode]}」：${MODE_ASK[mode](ctx)}`);
+    lines.push('你也可以换别的，mode 里写你选的。');
+  }
   return [
     { role: 'system', content: systemPrompt(ctx.persona) },
     { role: 'user', content: lines.join('\n') },
@@ -188,11 +215,28 @@ export interface ParsedThought {
   next?: { in?: number; note?: string };
 }
 
-/** 她给自己留的那句：范围收进 15–360 分钟，note 超过 40 字截断。都不合法就当没留。 */
-export function parseNext(value: unknown): { in?: number; note?: string } | undefined {
+export interface ParsedThought {
+  text: string;
+  importance: number;
+  next?: { in?: number; note?: string };
+  /** 她自己挑的方式。没填就用插件建议的那个。 */
+  mode?: ThoughtMode;
+  /** 她说「先搁着」。 */
+  rest?: boolean;
+}
+
+const MODE_IDS: ThoughtMode[] = ['reflect', 'wonder', 'plan', 'doubt', 'synthesize'];
+
+function asMode(value: unknown): ThoughtMode | undefined {
+  return typeof value === 'string' && (MODE_IDS as string[]).includes(value) ? (value as ThoughtMode) : undefined;
+}
+
+/** 她给自己留的那句：范围收进合法范围，note 超过 40 字截断。都不合法就当没留。 */
+export function parseNext(value: unknown, rest = false): { in?: number; note?: string } | undefined {
   if (!value || typeof value !== 'object') return undefined;
   const o = value as { in?: unknown; note?: unknown };
-  const inMin = clampNextIn(o.in);
+  // 说了 rest 就允许拉到一天，否则还是 15–360
+  const inMin = rest ? clampRestIn(o.in) : clampNextIn(o.in);
   const note = typeof o.note === 'string' && o.note.trim() ? clip(o.note.trim(), 40) : undefined;
   if (inMin === undefined && !note) return undefined;
   return { ...(inMin !== undefined ? { in: inMin } : {}), ...(note ? { note } : {}) };
@@ -203,11 +247,19 @@ export function parseThought(raw: string): ParsedThought {
 
   const tryJson = (s: string): ParsedThought | null => {
     try {
-      const o = JSON.parse(s) as { thought?: unknown; text?: unknown; importance?: unknown; next?: unknown };
+      const o = JSON.parse(s) as { thought?: unknown; text?: unknown; importance?: unknown; next?: unknown; mode?: unknown; rest?: unknown };
       const text = String(o.thought ?? o.text ?? '').trim();
       if (!text) return null;
-      const next = parseNext(o.next);
-      return { text, importance: clampImportance(o.importance), ...(next ? { next } : {}) };
+      const rest = o.rest === true || o.rest === 'true';
+      const next = parseNext(o.next, rest);
+      const mode = asMode(o.mode);
+      return {
+        text,
+        importance: clampImportance(o.importance),
+        ...(next ? { next } : {}),
+        ...(mode ? { mode } : {}),
+        ...(rest ? { rest: true } : {}),
+      };
     } catch {
       return null;
     }
@@ -259,16 +311,19 @@ export async function thinkOnce(
   if (!res.ok || !res.text) return { ok: false, reason: res.reason ?? '调用失败' };
   const parsed = parseThought(res.text);
   if (!parsed.text) return { ok: false, reason: '解析后没有内容' };
+  // 她自己挑了方式就用她的；没挑就沿用插件建议的
+  const finalMode = parsed.mode ?? mode;
   return {
     ok: true,
     thought: {
-      mode,
+      mode: finalMode,
       text: clip(parsed.text, 400),
       importance: parsed.importance,
       seeds,
       // 她自己留的那句要带出去，不然解析了也白解析
       ...(parsed.next?.in ? { nextIn: parsed.next.in } : {}),
       ...(parsed.next?.note ? { nextNote: parsed.next.note } : {}),
+      ...(parsed.rest ? { rest: true } : {}),
       promptTokens: res.promptTokens,
       outputTokens: res.outputTokens,
     },

@@ -6,7 +6,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SELF_AWARENESS_DEFAULTS, resolveEndpoint, type SelfAwarenessConfig } from '../src/config.ts';
-import { density, nextGapMinutes, ThoughtPool, REFLECT_THRESHOLD } from '../src/pool.ts';
+import { density, nextGapMinutes, noteTtlMs, ThoughtPool, REFLECT_THRESHOLD } from '../src/pool.ts';
 import { parseThought } from '../src/think.ts';
 import { SelfAwarenessWorld } from '../src/world.ts';
 
@@ -392,6 +392,62 @@ await (async () => {
   const lamp = (world.webUi().lamps ?? [])[0];
   ok(lamp?.state === 'loading', '53) 睡着 → 灯是 loading（不是在跑，也不是出错）');
   ok(String(lamp?.hint ?? '').includes('睡着'), '54) 提示里说清楚她睡着了');
+  await world.stop();
+}
+
+/* 12) 她自己挑方式 / 叫停 / 状态落库 */
+{
+  const m = parseThought('{"thought":"把两件事连起来看","importance":6,"mode":"synthesize"}');
+  ok(m.mode === 'synthesize', '55) 她挑的 mode 能被认出来');
+
+  const badMode = parseThought('{"thought":"随便","importance":6,"mode":"发呆"}');
+  ok(badMode.mode === undefined, '56) 乱写的 mode 被忽略，回到插件建议');
+
+  const rest = parseThought('{"thought":"先搁着","importance":5,"rest":true,"next":{"in":900}}');
+  ok(rest.rest === true && rest.next?.in === 900, '57) 说 rest 时允许拉到 900 分钟');
+
+  const noRest = parseThought('{"thought":"还没想完","importance":5,"next":{"in":900}}');
+  ok(noRest.next?.in === 360, '58) 没说 rest 时 900 被压回 360');
+
+  ok(noteTtlMs({}) === 12 * 3_600_000, '59) 没留间隔时便签存 12 小时');
+  ok(noteTtlMs({ nextIn: 1440 }) >= 24 * 3_600_000, '59b) 留了一天就至少存一天');
+  ok(noteTtlMs({ nextIn: 99999 }) === 36 * 3_600_000, '59c) 但最多 36 小时，不会翻出半年前的便签');
+}
+
+/* 13) 一次真的叫停：默认歇 8 小时，状态一起落库 */
+{
+  const { world, root } = makeWorld(
+    { enabled: true, dailyLimit: 20 },
+    { mood: 71, energy: 63, sleeping: false, activity: '在窗边翻书' },
+  );
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async () => ({
+    ok: true,
+    json: async () => ({
+      choices: [{ message: { content: '{"thought":"今天到此为止","importance":4,"mode":"plan","rest":true}' } }],
+      usage: { prompt_tokens: 80, completion_tokens: 20 },
+    }),
+  })) as never;
+
+  await world.start(host() as never);
+  const internals = world as unknown as { budget: { nextDueAt?: string }; tick(): Promise<void>; siteData(): Record<string, unknown> };
+  internals.budget.nextDueAt = new Date(Date.now() - 1000).toISOString();
+  await internals.tick();
+  globalThis.fetch = realFetch;
+
+  const gap = (Date.parse(String(internals.budget.nextDueAt)) - Date.now()) / 60_000;
+  ok(gap > 470 && gap < 490, `60) 她说先搁着、没给时间 → 默认歇 8 小时（实际 ${Math.round(gap)}）`);
+
+  const line = JSON.parse(readFileSync(join(root, 'self-awareness', 'thoughts.jsonl'), 'utf8').trim());
+  ok(line.rest === true, '61) rest 写进了 thoughts.jsonl');
+  ok(line.mode === 'plan', '62) 她挑的 mode 覆盖插件建议');
+  ok(line.energy === 63 && line.mood === 71, '63) 当时的精力和心情一起存下来');
+  ok(typeof line.phase === 'string' && line.phase.length > 0, '64) 时段也存下来');
+
+  const data = internals.siteData() as { resting: unknown; thoughts: { energy: number | null; phase: string | null }[] };
+  ok(Boolean(data.resting) && data.thoughts[0]?.energy === 63, '65) 时间线数据带 resting 与状态');
+  ok(Boolean(data.thoughts[0]?.phase), '66) 时间线能回看当时是哪个时段');
+
   await world.stop();
 }
 

@@ -130,7 +130,7 @@ const RAW_GROUP: ConfigGroup = {
       'worlds.self-awareness.maxGapMin': {
         type: 'integer',
         title: '最长隔多久',
-        description: '想到的东西多，就自动往这个上限靠；想得敷衍，就往上面那个下限靠。',
+        description: '想到的东西多，就自动往这个上限靠；想得敷衍，就往上面那个下限靠。她说「先搁着」时不受这里限制（可到一天）。',
         minimum: 2,
         maximum: 1440,
         default: 90,

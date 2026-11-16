@@ -92,6 +92,7 @@ h1 { margin: 8px 0 5px; font-size: 30px; line-height: 1.2; font-weight: 500; let
 .item.doubt .mode { color: var(--amber); }
 .item.synthesize .mode { color: var(--rose); }
 .carry { color: var(--purple); font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; }
+.rest-tag { color: var(--rose); font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; }
 .importance { display: inline-flex; gap: 3px; align-items: center; }
 .importance i { display: block; width: 4px; height: 4px; border-radius: 50%; background: var(--faint); opacity: .45; }
 .importance i.on { background: var(--purple); opacity: .9; }
@@ -290,8 +291,8 @@ function renderThoughts() {
   });
   document.getElementById('list').innerHTML = groups.map((g) => `
     <section class="day"><div class="day-label">${dateLabel(g.ts)}</div><div class="timeline">
-      ${g.items.map((t) => `<article class="item ${esc(t.mode)}">
-        <div class="meta"><span>${clock(t.ts)}</span><span class="mode">${esc(MODE_NAME[t.mode] || t.mode || '思绪')}</span>${dots(t.importance)}${t.carry ? '<span class="carry">接着上一条</span>' : ''}</div>
+      ${g.items.map((t) => `<article class="item ${esc(t.mode)}${t.rest ? ' rest' : ''}">
+        <div class="meta"><span>${clock(t.ts)}</span><span class="mode">${esc(MODE_NAME[t.mode] || t.mode || '思绪')}</span>${t.phase ? `<span>${esc(t.phase)}</span>` : ''}${t.energy != null ? `<span>精力 ${t.energy}</span>` : ''}${dots(t.importance)}${t.carry ? '<span class="carry">接着上一条</span>' : ''}${t.rest ? '<span class="rest-tag">她先搁着了</span>' : ''}</div>
         <div class="text">${esc(t.text)}</div>
         ${t.nextNote ? `<div class="note-line">留给下一次：${esc(t.nextNote)}${t.nextIn ? `<span>+${esc(t.nextIn)} MIN</span>` : ''}</div>` : ''}
       </article>`).join('')}
@@ -304,7 +305,9 @@ function render(d) {
   document.getElementById('sub').textContent = `SELF-AWARENESS / ${String(model).toUpperCase()}`;
   document.getElementById('heroModel').textContent = `MODEL / ${model}`;
   document.getElementById('next').textContent = next;
-  document.getElementById('nextHint').textContent = d.nextDueAt ? '她给未来的自己留了一点方向' : '由她下一次思考时自行决定';
+  document.getElementById('nextHint').textContent = d.resting
+    ? '她自己叫停了，不是卡住'
+    : d.nextDueAt ? '她给未来的自己留了一点方向' : '由她下一次思考时自行决定';
   document.getElementById('todayCount').textContent = formatNumber(d.today?.count);
   document.getElementById('todayTokens').textContent = formatNumber(d.today?.tokens);
   document.getElementById('totalThoughts').textContent = formatNumber(d.totalThoughts);
@@ -317,10 +320,12 @@ function render(d) {
   const health = document.getElementById('health'); health.className = `health ${status.kind === 'online' ? '' : status.kind}`; health.innerHTML = `<i class="health-dot"></i><span>${status.kind === 'online' ? 'ONLINE' : status.kind === 'error' ? 'ERROR' : 'OFFLINE'}</span>`;
   document.getElementById('err').innerHTML = d.error ? `<div class="err">上次调用失败：${esc(d.error)}</div>` : '';
   allThoughts = d.thoughts || [];
-  const latestNote = allThoughts.find((t) => t.nextNote);
-  document.getElementById('nextNote').textContent = latestNote?.nextNote || '她还没有给下一次留下便笺。';
-  document.getElementById('nextMode').textContent = latestNote ? (MODE_NAME[latestNote.mode] || '思绪') : '—';
-  document.getElementById('nextDue').textContent = latestNote?.nextIn ? `NEXT / ${latestNote.nextIn} MINUTES LATER` : (d.nextDueAt ? `NEXT / ${next}` : 'WAITING / 等待下一次安排');
+  const note = d.note;
+  document.getElementById('nextNote').textContent = note?.text || '她还没有给下一次留下便笺。';
+  document.getElementById('nextMode').textContent = note ? (MODE_NAME[note.mode] || '思绪') : '—';
+  document.getElementById('nextDue').textContent = d.resting
+    ? (d.nextDueAt ? `RESTING / 她说先搁着，${next} 再看` : 'RESTING / 她说到这儿了')
+    : note?.in ? `NEXT / ${note.in} MINUTES LATER` : (d.nextDueAt ? `NEXT / ${next}` : 'WAITING / 等待下一次安排');
   const refl = d.reflections || [];
   document.getElementById('reflWrap').hidden = !refl.length;
   document.getElementById('refl').innerHTML = refl.map((r) => `<div class="refl"><div class="meta"><span>${clock(r.ts)}</span><span>由 ${r.fromCount} 条想法收成</span></div><div class="text">${esc(r.text)}</div></div>`).join('');

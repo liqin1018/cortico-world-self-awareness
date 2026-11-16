@@ -30,6 +30,12 @@ export interface Thought {
   nextIn?: number;
   /** 她给自己留的话：「明早再看看那个帖子」。下次会原样递回去。 */
   nextNote?: string;
+  /** 她说「先搁着」——不是按密度排的下一跳，是她自己叫停的。 */
+  rest?: boolean;
+  /** 写下这条时的状态，用来在时间线上回看「她当时是什么样子」。 */
+  mood?: number;
+  energy?: number;
+  phase?: string;
 }
 
 export interface Reflection {
@@ -103,6 +109,10 @@ export class ThoughtPool {
       ...(t.carry ? { carry: true } : {}),
       ...(t.nextIn ? { nextIn: t.nextIn } : {}),
       ...(t.nextNote ? { nextNote: t.nextNote } : {}),
+      ...(t.rest ? { rest: true } : {}),
+      ...(typeof t.mood === 'number' ? { mood: t.mood } : {}),
+      ...(typeof t.energy === 'number' ? { energy: t.energy } : {}),
+      ...(t.phase ? { phase: t.phase } : {}),
     };
     ensureDir(this.dir);
     // 先让 cache 落地再 append：否则 all() 会从文件里读回刚写的那条，push 之后就有了两份
@@ -183,12 +193,37 @@ export function clamp01(n: number): number {
 /** 她自己说的「多久之后再想」的允许范围。上下都留边：说 1 分钟太密，说三天就断了。 */
 export const NEXT_MIN_MINUTES = 15;
 export const NEXT_MAX_MINUTES = 360;
+/** 说「先搁着」时允许拉得更长：至少两小时，最多一天。 */
+export const REST_MIN_MINUTES = 120;
+export const REST_MAX_MINUTES = 1440;
+/** 她说了 rest 却没给间隔时的默认值：睡一觉再说。 */
+export const REST_DEFAULT_MINUTES = 480;
 
 /** 把模型给的值收进合法范围；不是数字就当没写。 */
-export function clampNextIn(value: unknown): number | undefined {
+export function clampNextIn(value: unknown, max = NEXT_MAX_MINUTES): number | undefined {
   const v = Number(value);
   if (!Number.isFinite(v) || v <= 0) return undefined;
-  return Math.round(Math.max(NEXT_MIN_MINUTES, Math.min(NEXT_MAX_MINUTES, v)));
+  return Math.round(Math.max(NEXT_MIN_MINUTES, Math.min(max, v)));
+}
+
+/** 「先搁着」用的间隔：范围比平时宽。 */
+export function clampRestIn(value: unknown): number | undefined {
+  const v = Number(value);
+  if (!Number.isFinite(v) || v <= 0) return undefined;
+  return Math.round(Math.max(REST_MIN_MINUTES, Math.min(REST_MAX_MINUTES, v)));
+}
+
+/**
+ * 她留的那句话能存多久。
+ * 以前是硬 12 小时——她说「明早再看」，隔了 13 小时那张便签就直接没了。
+ * 现在跟着她自己的 next 走：留的间隔越长，便签留得越久；仍留上限，免得半年前的便签被翻出来。
+ */
+export const NOTE_TTL_MS = 12 * 3_600_000;
+export const NOTE_TTL_MAX_MS = 36 * 3_600_000;
+
+export function noteTtlMs(t: { nextIn?: number }): number {
+  const byHer = (Number(t.nextIn) || 0) * 60_000 + 3_600_000;
+  return Math.min(NOTE_TTL_MAX_MS, Math.max(NOTE_TTL_MS, byHer));
 }
 
 /** 累计重要度到这条线就该往上抽象一层了（写一条 reflection）。 */
