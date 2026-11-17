@@ -24,6 +24,8 @@ export interface SelfAwarenessConfig {
   temperature: number;
   /** 一句话交代她是谁，写进思考的上下文。留空就只按记忆来。 */
   personaNote: string;
+  /** 对方安静下来时，写一条「想说话」的冲动，交给记忆核心决定要不要开口。 */
+  urgeEnabled: boolean;
   /** 启动时 ping 一次接口，配完立刻知道对不对 */
   probeOnStart: boolean;
   /** 本地时间线页面 */
@@ -56,6 +58,7 @@ export const SELF_AWARENESS_DEFAULTS: SelfAwarenessConfig = {
   maxOutputTokens: 220,
   temperature: 0.95,
   personaNote: '',
+  urgeEnabled: true,
   probeOnStart: true,
   siteEnabled: true,
   sitePort: 7802,
@@ -172,6 +175,13 @@ const RAW_GROUP: ConfigGroup = {
         default: '',
         'x-hot': true,
       } as never,
+      'worlds.self-awareness.urgeEnabled': {
+        type: 'boolean',
+        title: '对方安静下来时，会想说一句',
+        description: '你停下不说话几分钟后，如果她正好在惦记一件事，就把「想说」写进本地记录，由记忆核心决定要不要替她开口。'
+          + '插件本身仍然不发消息；关掉她就只是安静地想。',
+        default: true,
+      },
       'worlds.self-awareness.probeOnStart': {
         type: 'boolean',
         title: '启动时测一次接口',

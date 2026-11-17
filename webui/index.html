@@ -26,6 +26,27 @@
   --red: #ff9f9b;
   --mono: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
 }
+html[data-mode="light"] {
+  --bg: #eef3f7;
+  --bg-deep: #e6edf3;
+  --surface: #ffffff;
+  --surface-2: #f4f8fb;
+  --surface-3: #e9f0f6;
+  --line: rgba(40, 78, 104, .16);
+  --line-soft: rgba(40, 78, 104, .09);
+  --text: #17263a;
+  --muted: #54677d;
+  --faint: #8296a8;
+  --cyan: #168f83;
+  --cyan-soft: rgba(22, 143, 131, .1);
+  --purple: #7a4fd0;
+  --purple-soft: rgba(122, 79, 208, .1);
+  --blue: #2f6fbe;
+  --amber: #a4711b;
+  --rose: #b8346c;
+  --red: #c0392b;
+}
+
 * { box-sizing: border-box; }
 html { background: var(--bg); }
 body {
@@ -97,7 +118,7 @@ h1 { margin: 8px 0 5px; font-size: 30px; line-height: 1.2; font-weight: 500; let
 .importance i { display: block; width: 4px; height: 4px; border-radius: 50%; background: var(--faint); opacity: .45; }
 .importance i.on { background: var(--purple); opacity: .9; }
 .text { color: var(--text); font-size: 15px; line-height: 1.9; white-space: pre-wrap; word-break: break-word; }
-.item:hover .text { color: #f3f7fd; }
+.item:hover .text { color: var(--text); }
 .note-line { margin-top: 11px; padding: 8px 12px; color: var(--purple); background: var(--purple-soft); border-left: 2px solid var(--purple); border-radius: 0 6px 6px 0; font-size: 12px; }
 .note-line span { color: rgba(201, 162, 255, .65); margin-left: 5px; font-family: var(--mono); }
 .empty { color: var(--muted); padding: 26px 0; border-top: 1px dashed var(--line); }
@@ -154,6 +175,34 @@ code { color: var(--muted); font: 11px var(--mono); }
   .aside { display: flex; }
   .text { font-size: 14px; }
 }
+
+/* ── 浅色：深色卡片与网格底单独换掉 ── */
+.top-right { display: flex; align-items: center; gap: 12px; }
+.theme-btn {
+  width: 30px; height: 30px; display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--line); border-radius: 7px; background: transparent;
+  color: var(--muted); font-size: 14px; line-height: 1; cursor: pointer; transition: .18s ease;
+}
+.theme-btn:hover { color: var(--text); border-color: var(--cyan); background: var(--cyan-soft); }
+html[data-mode="light"] body {
+  background:
+    linear-gradient(rgba(22, 143, 131, .05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(22, 143, 131, .05) 1px, transparent 1px),
+    radial-gradient(circle at 75% 0%, rgba(122, 79, 208, .08), transparent 34rem),
+    var(--bg);
+  background-size: 48px 48px, 48px 48px, auto, auto;
+}
+html[data-mode="light"] .signal,
+html[data-mode="light"] .next-signal { background: #fff; }
+html[data-mode="light"] .next-signal { background: linear-gradient(115deg, rgba(122, 79, 208, .1), #fff 60%); }
+html[data-mode="light"] .card { background: #fff; }
+html[data-mode="light"] .next-card {
+  border-color: rgba(122, 79, 208, .3);
+  background: linear-gradient(145deg, rgba(122, 79, 208, .09), #fff 55%);
+}
+html[data-mode="light"] .probe button { border-color: rgba(22, 143, 131, .38); }
+html[data-mode="light"] .brand-mark { box-shadow: 0 0 0 4px rgba(22, 143, 131, .1); }
+html[data-mode="light"] .live-dot { box-shadow: 0 0 10px rgba(22, 143, 131, .5); }
 </style>
 </head>
 <body>
@@ -163,7 +212,10 @@ code { color: var(--muted); font: 11px var(--mono); }
       <span class="brand-mark" aria-hidden="true"></span>
       <div><span class="brand-title">她的时间线</span><span class="brand-sub" id="sub">SELF-AWARENESS / LOADING</span></div>
     </div>
-    <div class="live"><span class="live-dot" id="liveDot"></span><span id="liveText">正在读取状态</span></div>
+    <div class="top-right">
+      <div class="live"><span class="live-dot" id="liveDot"></span><span id="liveText">正在读取状态</span></div>
+      <button class="theme-btn" id="themeBtn" type="button" title="切换深浅色" aria-label="切换深浅色">☾</button>
+    </div>
   </header>
 
   <section class="hero">
@@ -352,6 +404,26 @@ probeButton.addEventListener('click', async () => {
   } catch (e) { probeMsg.className = 'probe-result bad'; probeMsg.textContent = '服务不可达'; }
   setTimeout(() => { probeButton.disabled = false; probeButton.textContent = '测接口'; }, 8000);
 });
+const THEME_KEY = 'sa-theme';
+function applyTheme() {
+  const q = new URLSearchParams(location.search).get('theme');
+  let saved = null;
+  try { saved = localStorage.getItem(THEME_KEY); } catch { /* 隐私模式忽略 */ }
+  const mode = q === 'light' || q === 'dark' ? q : saved === 'light' ? 'light' : 'dark';
+  document.documentElement.dataset.mode = mode;
+  const btn = document.getElementById('themeBtn');
+  if (btn) {
+    btn.textContent = mode === 'light' ? '☀' : '☾';
+    btn.title = mode === 'light' ? '切到深色' : '切到浅色';
+  }
+}
+document.getElementById('themeBtn')?.addEventListener('click', () => {
+  const next = document.documentElement.dataset.mode === 'light' ? 'dark' : 'light';
+  try { localStorage.setItem(THEME_KEY, next); } catch { /* 忽略 */ }
+  applyTheme();
+});
+applyTheme();
+
 load();
 setInterval(load, 30000);
 if (location.hash === '#probe') probeButton.click();

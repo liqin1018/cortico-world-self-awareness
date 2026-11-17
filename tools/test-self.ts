@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { SELF_AWARENESS_DEFAULTS, resolveEndpoint, type SelfAwarenessConfig } from '../src/config.ts';
 import { density, nextGapMinutes, noteTtlMs, ThoughtPool, REFLECT_THRESHOLD } from '../src/pool.ts';
 import { parseThought, buildMessages } from '../src/think.ts';
+import { readUrges } from '../src/urge.ts';
 import { SelfAwarenessWorld } from '../src/world.ts';
 
 let bad = 0;
@@ -492,6 +493,93 @@ await (async () => {
   const user = msgs[1]?.content ?? '';
   ok(user.includes('你上次写到') && user.includes('8 小时前'), '72) 跨夜接续说「写到」并带上隔了多久');
   ok(!user.includes('你想到「'), '73) 不说「你想过」，避免冒充回忆');
+}
+
+/* 15) 想说话的冲动：安静下来才写，且每段只写一条 */
+{
+  const mk = (opts: { rest?: boolean } = {}) => {
+    const { world, root } = makeWorld({ enabled: true, urgeEnabled: true, quietAfterUserMin: 20 });
+    const dir = join(root, 'self-awareness');
+    mkdirSync(dir, { recursive: true });
+    const ts = new Date(Date.now() - 20 * 60_000).toISOString();
+    const line = { id: 'u1', ts, mode: 'wonder', text: '他刚才那句话我还没答完', importance: 8, seeds: [], ...(opts.rest ? { rest: true } : {}) };
+    writeFileSync(join(dir, 'thoughts.jsonl'), JSON.stringify(line) + '\n', 'utf8');
+    (world as unknown as { pool: { cache: unknown } }).pool.cache = null;
+    return { world, dir };
+  };
+  // 时间戳只算一次：每次调用都重新 Date.now() 的话，key 会漂移，测试会误判成「重复写」
+  const lastUserTs = new Date(Date.now() - 10 * 60_000).toISOString();
+  const hostTenMin = {
+    log: { info: () => {}, warn: () => {}, error: () => {} },
+    store: { range: () => [{ ts: lastUserTs, origin: 'external' }] },
+    pushEvent: async () => true,
+  };
+  const tick = async (world: unknown) => {
+    const w = world as { budget: { nextDueAt?: string }; lastActivityProbe: number; tick(): Promise<void> };
+    w.budget.nextDueAt = new Date(Date.now() + 3_600_000).toISOString();
+    w.lastActivityProbe = 0;
+    await w.tick();
+  };
+
+  {
+    const { world, dir } = mk();
+    await world.start(hostTenMin as never);
+    await tick(world);
+    const urges = readUrges(dir);
+    ok(urges.length === 1 && urges[0].text.includes('那句话') && urges[0].quietMin === 10, '74) 安静 10 分钟 → 写一条「想说话」');
+    await tick(world);
+    ok(readUrges(dir).length === 1, '75) 同一段沉默只写一条');
+    await world.stop();
+  }
+
+  {
+    const { world, dir } = mk({ rest: true });
+    await world.start(hostTenMin as never);
+    await tick(world);
+    ok(readUrges(dir).length === 0, '76) 她说了「先搁着」，就不写冲动');
+    await world.stop();
+  }
+}
+
+/* 16) 未完成的线：摆出来让她自己挑 */
+{
+  const msgs = buildMessages('wonder', {
+    now: '11-17 12:00（中午）', silence: '', memories: [], recent: [],
+    loops: [{ text: '那晚第四遍猛鬼街', ago: '5 小时' }, { text: '抖音那两个号', ago: '2 小时' }],
+  });
+  const user = msgs[1]?.content ?? '';
+  ok(user.includes('1. 那晚第四遍猛鬼街') && user.includes('2. 抖音那两个号'), '77) 未完成的线会摆出来');
+  ok(user.includes('pick'), '78) 提示她可以用 pick 选');
+
+  const parsed = parseThought('{"thought":"接着那条说","importance":6,"pick":2}');
+  ok(parsed.pick === 2, '79) pick 能被解析');
+
+  const { world, root } = makeWorld({ enabled: true, dailyLimit: 20 });
+  const dir = join(root, 'self-awareness');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'thoughts.jsonl'), JSON.stringify({
+    id: 'loop1', ts: new Date(Date.now() - 300 * 60_000).toISOString(), mode: 'reflect',
+    text: '昨晚想到一半的那条线', importance: 7, seeds: [], nextNote: '明早再看',
+  }) + '\n', 'utf8');
+  (world as unknown as { pool: { cache: unknown } }).pool.cache = null;
+
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async () => ({
+    ok: true,
+    json: async () => ({
+      choices: [{ message: { content: '{"thought":"接着说第二层","importance":7,"pick":1}' } }],
+      usage: { prompt_tokens: 100, completion_tokens: 30 },
+    }),
+  })) as never;
+  await world.start(host() as never);
+  const internals = world as unknown as { budget: { nextDueAt?: string }; tick(): Promise<void> };
+  internals.budget.nextDueAt = new Date(Date.now() - 1000).toISOString();
+  await internals.tick();
+  globalThis.fetch = realFetch;
+
+  const line = JSON.parse(readFileSync(join(dir, 'thoughts.jsonl'), 'utf8').trim().split('\n').pop() ?? '{}');
+  ok(line.carry === true && (line.carryGapMin ?? 0) > 290, `80) 她挑的那条线成为接续（${line.carryGapMin} 分钟前）`);
+  await world.stop();
 }
 
 console.log(bad ? `\n${bad} 项失败（共 ${total}）` : `\n全部通过（共 ${total} 项）`);

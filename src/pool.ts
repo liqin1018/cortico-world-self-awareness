@@ -254,6 +254,8 @@ export interface BudgetState {
   nextDueAt?: string;
   /** 她留的那句话已经递过一次了，别重复递。 */
   lastNoteId?: string;
+  /** 这一段沉默已经写过一条「想说话」了，别每个 tick 重写。 */
+  lastUrgeAt?: string;
 }
 
 const BUDGET_FILE = 'state.json';
@@ -271,6 +273,7 @@ export function loadBudget(dir: string): BudgetState {
       ...(raw.lastThoughtAt ? { lastThoughtAt: String(raw.lastThoughtAt) } : {}),
       ...(raw.nextDueAt ? { nextDueAt: String(raw.nextDueAt) } : {}),
       ...(raw.lastNoteId ? { lastNoteId: String(raw.lastNoteId) } : {}),
+      ...(raw.lastUrgeAt ? { lastUrgeAt: String(raw.lastUrgeAt) } : {}),
     };
   } catch {
     return { day: '', count: 0, tokens: 0, pendingImportance: 0 };

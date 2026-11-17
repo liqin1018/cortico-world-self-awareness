@@ -29,6 +29,8 @@ export interface ThinkContext {
   carry?: boolean;
   /** 上一条是多久前写的（「8 小时」「两天」）。跨夜时得让她知道隔了多久。 */
   carryAgo?: string;
+  /** 手上还挂着的几件没想完的事，她自己挑接哪条。 */
+  loops?: { text: string; ago: string }[];
 }
 
 function systemPrompt(persona?: string): string {
@@ -46,11 +48,12 @@ ${persona ? `你是谁：${persona}\n` : ''}
 - 真的不想了、想搁着，就写 "rest":true，间隔可以长到一天。
 
 只输出一行 JSON，不要别的：
-{"thought":"你想到的那件事","importance":1,"mode":"wonder","next":{"in":60,"note":"留给自己的一句话"},"rest":false}
+{"thought":"你想到的那件事","importance":1,"mode":"wonder","next":{"in":60,"note":"留给自己的一句话"},"rest":false,"pick":0}
 mode 只能填：reflect（回看以前的事）/ wonder（没缘由地走神）/ plan（打算接下来做什么）/ doubt（琢磨一件没想明白的）/ synthesize（把两件看着不相干的事连起来）。
 importance 是 1-10：这件事对你有多重要。10 = 你会一直想它。
 next 是你给自己留的：还会想，就定个时间（15–360 分钟；写了 rest 可以到 1440）和一句「下次从哪儿接着想」。
-想完了、没什么可接的，就空着。`;
+想完了、没什么可接的，就空着。
+pick 是接哪条旧线：下面会列出你手上还挂着的几件，接第几件就写几，新起一件写 0。`;
 }
 
 const MODE_LABEL: Record<ThoughtMode, string> = {
@@ -115,6 +118,11 @@ export function buildMessages(mode: ThoughtMode, ctx: ThinkContext): { role: str
   } else {
     lines.push('这次没人跟你说话。想怎么想都行：');
     lines.push(MODE_MENU);
+    if (ctx.loops?.length) {
+      lines.push('（你手上还挂着这几件，没想完：');
+      ctx.loops.forEach((l, i) => lines.push(`${i + 1}. ${l.text}（${l.ago}前写的）`));
+      lines.push('接哪条都行，也可以新起一件；接的话在 pick 里写序号，新起写 0。）');
+    }
     if (ctx.focus) lines.push(`（手边现成的事：「${ctx.focus}」，想从这儿起头也行，不想用也行。）`);
     lines.push(`这会儿更像「${MODE_LABEL[mode]}」：${MODE_ASK[mode](ctx)}`);
     lines.push('你也可以换别的，mode 里写你选的。');
@@ -226,6 +234,8 @@ export interface ParsedThought {
   mode?: ThoughtMode;
   /** 她说「先搁着」。 */
   rest?: boolean;
+  /** 接第几条旧线（从 1 开始）；0 / 没写就是新起一件。 */
+  pick?: number;
 }
 
 const MODE_IDS: ThoughtMode[] = ['reflect', 'wonder', 'plan', 'doubt', 'synthesize'];
@@ -250,18 +260,20 @@ export function parseThought(raw: string): ParsedThought {
 
   const tryJson = (s: string): ParsedThought | null => {
     try {
-      const o = JSON.parse(s) as { thought?: unknown; text?: unknown; importance?: unknown; next?: unknown; mode?: unknown; rest?: unknown };
+      const o = JSON.parse(s) as { thought?: unknown; text?: unknown; importance?: unknown; next?: unknown; mode?: unknown; rest?: unknown; pick?: unknown };
       const text = String(o.thought ?? o.text ?? '').trim();
       if (!text) return null;
       const rest = o.rest === true || o.rest === 'true';
       const next = parseNext(o.next, rest);
       const mode = asMode(o.mode);
+      const pick = Number(o.pick);
       return {
         text,
         importance: clampImportance(o.importance),
         ...(next ? { next } : {}),
         ...(mode ? { mode } : {}),
         ...(rest ? { rest: true } : {}),
+        ...(Number.isFinite(pick) && pick > 0 ? { pick: Math.round(pick) } : {}),
       };
     } catch {
       return null;
@@ -297,6 +309,8 @@ export function parseThought(raw: string): ParsedThought {
 export interface ThinkOnceResult {
   ok: boolean;
   thought?: Omit<Thought, 'id' | 'ts'>;
+  /** 她挑了第几条旧线（从 1 开始）；没挑就没有。 */
+  pickedLoop?: number;
   promptTokens?: number;
   outputTokens?: number;
   reason?: string;
@@ -316,8 +330,12 @@ export async function thinkOnce(
   if (!parsed.text) return { ok: false, reason: '解析后没有内容' };
   // 她自己挑了方式就用她的；没挑就沿用插件建议的
   const finalMode = parsed.mode ?? mode;
+  const picked = parsed.pick && ctx.loops?.length && parsed.pick <= ctx.loops.length
+    ? parsed.pick
+    : undefined;
   return {
     ok: true,
+    ...(picked ? { pickedLoop: picked } : {}),
     thought: {
       mode: finalMode,
       text: clip(parsed.text, 400),

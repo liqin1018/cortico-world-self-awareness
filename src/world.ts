@@ -7,6 +7,7 @@
  *  3) 每一次思考都要记 token，超预算就停到明天 —— 花的是用户自己的钱。
  */
 import { existsSync, readFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { formatLocal } from './time.ts';
 import type { ToolDef, World, WorldHost, WorldWebUiDecl } from 'cortico/core/types.ts';
@@ -38,6 +39,7 @@ import {
 import { buildReflectMessages, callModel, thinkOnce, type ThinkContext } from './think.ts';
 import { ThoughtSite } from './site.ts';
 import { clip, dayKey, humanSpan, moodWord, timeOfDay } from './time.ts';
+import { appendUrge } from './urge.ts';
 
 const TICK_MS = 60_000;
 /** 连续失败后别每 60 秒撞一次墙。 */
@@ -285,6 +287,10 @@ export class SelfAwarenessWorld implements World {
       return;
     }
 
+    // 对方安静下来了：把「想说话」写出去，交给记忆核心决定要不要开口。
+    // 放在 due 之前——就算下一次思考还有三小时，这份冲动也该现在写。
+    this.maybeUrge(now);
+
     // 节奏：上一次定的时间没到就什么都不做（这是唯一等时间的地方）
     const due = this.budget.nextDueAt ? Date.parse(this.budget.nextDueAt) : 0;
     if (Number.isFinite(due) && due > now) return;
@@ -304,6 +310,7 @@ export class SelfAwarenessWorld implements World {
     const { mode, carry, carryAgeMin, carryDepth } = this.nextMode();
     const seeds = this.pickSeeds(mode, now);
     const note = this.latestNote(now);
+    const loops = this.openLoops(now);
     const ctx = this.buildContext(
       core,
       now,
@@ -311,6 +318,7 @@ export class SelfAwarenessWorld implements World {
       carry,
       note?.text,
       carryAgeMin ? humanSpan(carryAgeMin * 60_000) : undefined,
+      loops,
     );
 
     const started = Date.now();
@@ -339,13 +347,16 @@ export class SelfAwarenessWorld implements World {
 
     this.fails = 0;
     this.lastError = '';
-    const carried = Boolean(carry) && res.thought.mode === mode;
+    // 她自己挑了哪条旧线，就接那条；没挑才按建议
+    const picked = res.pickedLoop ? loops[res.pickedLoop - 1] : undefined;
+    const carried = Boolean(picked) || (Boolean(carry) && res.thought.mode === mode);
+    const carryGap = picked ? picked.ageMin : carryAgeMin;
+    const carryDeep = picked ? picked.depth + 1 : carryDepth;
     const thought = this.pool.add({
       ...res.thought,
-      // 她还按建议往下接，才算「接着上一条」；自己换了方式，多半是换了件事
       carry: carried,
-      ...(carried && carryAgeMin ? { carryGapMin: carryAgeMin } : {}),
-      ...(carried && carryDepth ? { carryDepth } : {}),
+      ...(carried && carryGap ? { carryGapMin: carryGap } : {}),
+      ...(carried && carryDeep ? { carryDepth: carryDeep } : {}),
       // 把「她当时是什么样子」一起存下来：时间线以后能回看，不只是知道她想了什么
       ...(typeof core?.mood === 'number' ? { mood: Math.round(core.mood) } : {}),
       ...(typeof core?.energy === 'number' ? { energy: Math.round(core.energy) } : {}),
@@ -439,6 +450,48 @@ export class SelfAwarenessWorld implements World {
    * 最近一次外部消息的时间（任何来源：私聊、群聊都算）。
    * 30 秒缓存一次，别每个 tick 都去翻事件表。
    */
+  /**
+   * 对方刚安静下来时，把「想说话」写成一条冲动。
+   *
+   * 只在 4–45 分钟的沉默窗口里写，每段沉默只写一条；取自最近 3 小时内、
+   * 重要度 6 以上的想法。不调模型、不花钱——只是把已有的东西挪个地方。
+   * 她说了「先搁着」的那段时间里不写：那是她自己要的安静。
+   */
+  private maybeUrge(now: number): void {
+    const cfg = this.cfg();
+    if (cfg.urgeEnabled === false) return;
+    const last = this.probeLastActivity(now);
+    if (!last) return;
+    const quietMin = (now - last) / 60_000;
+    if (quietMin < 4 || quietMin > 45) return;
+    const key = new Date(last).toISOString();
+    if (this.budget.lastUrgeAt === key) return;
+
+    const lastThought = this.pool.recent(1)[0];
+    if (lastThought?.rest) {
+      const restAge = now - (Date.parse(lastThought.ts) || 0);
+      if (restAge >= 0 && restAge < 12 * 3_600_000) return;
+    }
+
+    const source = this.pool.recent(8).reverse().find((t) => {
+      const age = now - (Date.parse(t.ts) || 0);
+      return age >= 0 && age <= 3 * 3_600_000 && Number(t.importance) >= 6;
+    });
+    if (!source) return;
+
+    appendUrge(this.dataDir, {
+      id: randomUUID().slice(0, 8),
+      ts: new Date(now).toISOString(),
+      type: 'silence',
+      text: clip(source.text, 120),
+      importance: source.importance,
+      sourceId: source.id,
+      quietMin: Math.round(quietMin),
+    });
+    this.budget.lastUrgeAt = key;
+    saveBudget(this.dataDir, this.budget);
+  }
+
   private probeLastActivity(now: number): number {
     if (now - this.lastActivityProbe < 30_000) return this.lastActivityAt;
     this.lastActivityProbe = now;
@@ -620,6 +673,7 @@ export class SelfAwarenessWorld implements World {
     carry?: string,
     lastNote?: string,
     carryAgo?: string,
+    loops?: { id: string; text: string; ageMin: number; depth: number }[],
   ): ThinkContext {
     const tz = this.tz();
     // 「11-15 23:30（深夜）」——只说时间她不知道那是深夜，会想出「下午出去走走」
@@ -652,9 +706,33 @@ export class SelfAwarenessWorld implements World {
       focus: carry ? clip(carry, 50) : seeds[0] ? clip(seeds[0].text, 50) : undefined,
       carry: Boolean(carry),
       carryAgo,
+      loops: loops?.length
+        ? loops.map((l) => ({ text: clip(l.text, 60), ago: humanSpan(l.ageMin * 60_000) }))
+        : undefined,
       selfView: reflections.length ? clip(reflections.slice(-1)[0].text, 80) : undefined,
       persona: String(this.cfg().personaNote ?? '').trim() || undefined,
     };
+  }
+
+  /**
+   * 手上还挂着的事：最近 12 条里留过话、还没过期的，最多三条。
+   * 这些不是「待办」，是她自己说过「还想接着想」的线。
+   */
+  private openLoops(now: number): { id: string; text: string; ageMin: number; depth: number }[] {
+    const out: { id: string; text: string; ageMin: number; depth: number }[] = [];
+    for (const t of this.pool.all().slice(-12).reverse()) {
+      if (!t.nextNote) continue;
+      const at = Date.parse(t.ts) || 0;
+      if (!at || now - at > noteTtlMs(t)) continue;
+      out.push({
+        id: t.id,
+        text: t.text,
+        ageMin: Math.max(1, Math.round((now - at) / 60_000)),
+        depth: Number(t.carryDepth) || 0,
+      });
+      if (out.length >= 3) break;
+    }
+    return out;
   }
 
   /**
