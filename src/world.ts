@@ -6,7 +6,7 @@
  *  2) 没配模型、没开开关就完全不动，连定时器都不该有事干；
  *  3) 每一次思考都要记 token，超预算就停到明天 —— 花的是用户自己的钱。
  */
-import { existsSync, readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { formatLocal } from './time.ts';
@@ -112,6 +112,7 @@ export class SelfAwarenessWorld implements World {
     this.site = new ThoughtSite({
       data: () => this.siteData(),
       probe: () => this.probe(),
+      deleteThought: (id) => this.deleteThought(id),
     });
     this.budget = loadBudget(this.dataDir);
     const last = this.pool.all().slice(-1)[0];
@@ -712,6 +713,28 @@ export class SelfAwarenessWorld implements World {
       selfView: reflections.length ? clip(reflections.slice(-1)[0].text, 80) : undefined,
       persona: String(this.cfg().personaNote ?? '').trim() || undefined,
     };
+  }
+
+  /**
+   * 删一条想法，并在本地留一块墓碑。
+   * 记忆核心会读墓碑，把它凭这条想法收成的卡片一起清掉——
+   * 不然「删了」只是时间线看不见，卡片还在星图上。
+   */
+  private deleteThought(id: string): boolean {
+    const hit = this.pool.remove(id);
+    if (!hit) return false;
+    try {
+      appendFileSync(
+        join(this.dataDir, 'deleted-thoughts.jsonl'),
+        `${JSON.stringify({ id: hit.id, ts: new Date().toISOString() })}\n`,
+        'utf8',
+      );
+    } catch {
+      // 墓碑写不上不影响删除本身，卡片手动删
+    }
+    if (this.lastSnapshot && this.lastSnapshot.ts === hit.ts) this.lastSnapshot = null;
+    this.host?.log?.info?.('[self-awareness] 删了一条想法', { id: hit.id });
+    return true;
   }
 
   /**

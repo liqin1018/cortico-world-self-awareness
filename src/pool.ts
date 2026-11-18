@@ -5,7 +5,7 @@
  * 这次想得多、想得深 → 歇久点；这次敷衍了一句 → 过一会儿再想。
  * 间隔由内容算出来，不是钟表算出来。
  */
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
@@ -126,6 +126,29 @@ export class ThoughtPool {
     appendFileSync(this.file, `${JSON.stringify(thought)}\n`, 'utf8');
     list.push(thought);
     return thought;
+  }
+
+  /**
+   * 删一条。先留一份 .bak，再写临时文件替换——
+   * 不能直接截断原文件，写到一半断电就全没了。
+   * 返回被删的那条；没找到就是 null。
+   */
+  remove(id: string): Thought | null {
+    const all = this.all();
+    const hit = all.find((t) => t.id === id);
+    if (!hit) return null;
+    const next = all.filter((t) => t.id !== id);
+    ensureDir(this.dir);
+    try {
+      copyFileSync(this.file, `${this.file}.bak`);
+    } catch {
+      return null; // 备份没成就不删
+    }
+    const tmp = `${this.file}.tmp`;
+    writeFileSync(tmp, next.map((t) => JSON.stringify(t)).join('\n') + (next.length ? '\n' : ''), 'utf8');
+    renameSync(tmp, this.file);
+    this.cache = next;
+    return hit;
   }
 
   reflections(): Reflection[] {

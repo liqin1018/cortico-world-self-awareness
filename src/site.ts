@@ -6,6 +6,7 @@
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { readFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const PAGE_FILE = fileURLToPath(new URL('../webui/index.html', import.meta.url));
@@ -22,6 +23,8 @@ export interface ProbeResult {
 
 export interface SiteHooks {
   data(): unknown;
+  /** 删一条想法。返回是否真的删掉了。 */
+  deleteThought?(id: string): boolean;
   /** 手点「测接口」时调。不写文件、不占额度。 */
   probe?(): Promise<ProbeResult>;
 }
@@ -34,6 +37,8 @@ export class ThoughtSite {
   private listening = 0;
   private lastProbe = 0;
   private readonly hooks: SiteHooks;
+  /** 写操作的口令：随页面下发，只防跨站脚本顺手调本地接口，不当成鉴权。 */
+  private readonly token = randomUUID().replace(/-/g, '').slice(0, 20);
 
   constructor(hooks: SiteHooks) {
     this.hooks = hooks;
@@ -130,10 +135,27 @@ export class ThoughtSite {
         });
       return;
     }
+    if (url.pathname === '/api/thought' && req.method === 'DELETE') {
+      if (String(req.headers['x-sa-token'] ?? '') !== this.token) {
+        rsp.writeHead(403).end('forbidden');
+        return;
+      }
+      const id = url.searchParams.get('id') ?? '';
+      const del = this.hooks.deleteThought;
+      if (!del) {
+        rsp.writeHead(501, { 'content-type': 'application/json; charset=utf-8' });
+        rsp.end(JSON.stringify({ removed: false, error: '这个版本不支持删除' }));
+        return;
+      }
+      const removed = del(id);
+      rsp.writeHead(removed ? 200 : 404, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      rsp.end(JSON.stringify({ removed }));
+      return;
+    }
     if (url.pathname === '/api/data') {
       let body = '';
       try {
-        body = JSON.stringify(this.hooks.data());
+        body = JSON.stringify({ ...(this.hooks.data() as Record<string, unknown>), writeToken: this.token });
       } catch (error) {
         body = JSON.stringify({ error: error instanceof Error ? error.message : String(error) });
       }

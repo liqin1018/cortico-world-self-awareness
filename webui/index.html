@@ -101,6 +101,16 @@ h1 { margin: 8px 0 5px; font-size: 30px; line-height: 1.2; font-weight: 500; let
 .timeline { position: relative; padding-left: 23px; }
 .timeline::before { content: ''; position: absolute; left: 4px; top: 8px; bottom: 13px; width: 1px; background: linear-gradient(var(--line), rgba(143, 183, 221, 0)); }
 .item { position: relative; padding: 0 0 24px; }
+.item .del {
+  position: absolute; right: 0; top: -4px;
+  padding: 2px 8px; font-size: 11px; line-height: 1.5;
+  color: var(--faint); background: var(--surface);
+  border: 1px solid var(--line); border-radius: 5px;
+  opacity: 0; transition: .15s ease; cursor: pointer;
+}
+.item:hover .del, .item .del:focus-visible { opacity: 1; }
+.item .del:hover { color: var(--red); border-color: rgba(192, 57, 43, .45); }
+@media (hover: none) { .item .del { opacity: 1; } }
 .item::before { content: ''; position: absolute; left: -22px; top: 8px; width: 7px; height: 7px; border: 2px solid var(--bg); border-radius: 50%; background: var(--cyan); box-shadow: 0 0 0 1px rgba(102, 227, 211, .6); }
 .item.wonder::before { background: var(--purple); box-shadow: 0 0 0 1px rgba(201, 162, 255, .55); }
 .item.plan::before { background: var(--blue); box-shadow: 0 0 0 1px rgba(140, 196, 255, .55); }
@@ -347,10 +357,14 @@ function renderThoughts() {
         <div class="meta"><span>${clock(t.ts)}</span><span class="mode">${esc(MODE_NAME[t.mode] || t.mode || '思绪')}</span>${t.phase ? `<span>${esc(t.phase)}</span>` : ''}${t.energy != null ? `<span>精力 ${t.energy}</span>` : ''}${dots(t.importance)}${t.carry ? `<span class="carry">${(t.carryGapMin ?? 0) >= 360 ? '跨夜接着想' : '接着上一条'}</span>` : ''}${t.rest ? '<span class="rest-tag">她先搁着了</span>' : ''}</div>
         <div class="text">${esc(t.text)}</div>
         ${t.nextNote ? `<div class="note-line">留给下一次：${esc(t.nextNote)}${t.nextIn ? `<span>+${esc(t.nextIn)} MIN</span>` : ''}</div>` : ''}
+        <button class="del" data-del="${esc(t.id)}" title="删除这条">删除</button>
       </article>`).join('')}
     </div></section>`).join('');
 }
+let TOKEN = '';
+
 function render(d) {
+  TOKEN = d.writeToken || '';
   const status = statusInfo(d);
   const model = d.model || '未配置';
   const next = d.nextDueAt ? nextClock(d.nextDueAt) : '未安排';
@@ -423,6 +437,25 @@ document.getElementById('themeBtn')?.addEventListener('click', () => {
   applyTheme();
 });
 applyTheme();
+
+document.getElementById('list').addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-del]');
+  if (!btn) return;
+  const id = btn.dataset.del;
+  if (!confirm('删掉这条？\n\n原文会被移除；记忆核心里由它收成的卡片会一起撤回（更早的卡片请手动删）。')) return;
+  btn.disabled = true;
+  try {
+    const rsp = await fetch(`/api/thought?id=${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      headers: { 'x-sa-token': TOKEN },
+    });
+    if (!rsp.ok) throw new Error(rsp.status === 403 ? '没有写权限' : `HTTP ${rsp.status}`);
+    await load();
+  } catch (err) {
+    alert(`删除失败：${err.message}`);
+    btn.disabled = false;
+  }
+});
 
 load();
 setInterval(load, 30000);

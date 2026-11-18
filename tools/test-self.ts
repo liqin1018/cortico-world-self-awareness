@@ -582,5 +582,25 @@ await (async () => {
   await world.stop();
 }
 
+/* 17) 删一条想法：文件真的少了，且留了备份与墓碑 */
+{
+  const { world, root } = makeWorld({ enabled: true });
+  const dir = join(root, 'self-awareness');
+  mkdirSync(dir, { recursive: true });
+  const file = join(dir, 'thoughts.jsonl');
+  writeFileSync(file, [
+    JSON.stringify({ id: 'k1', ts: new Date().toISOString(), mode: 'wonder', text: '留下', importance: 5, seeds: [] }),
+    JSON.stringify({ id: 'k2', ts: new Date().toISOString(), mode: 'wonder', text: '删掉', importance: 5, seeds: [] }),
+  ].join('\n') + '\n', 'utf8');
+  const pool = (world as unknown as { pool: { cache: unknown; remove(id: string): unknown } }).pool;
+  pool.cache = null;
+  const removed = pool.remove('k2');
+  ok(Boolean(removed), '81) 删除返回被删的那条');
+  const left = readFileSync(file, 'utf8');
+  ok(left.includes('k1') && !left.includes('k2'), '82) 文件里真的少了');
+  ok(existsSync(`${file}.bak`), '83) 删前留了 .bak 备份');
+  ok(pool.remove('nope') === null, '84) 删不存在的返回 null');
+}
+
 console.log(bad ? `\n${bad} 项失败（共 ${total}）` : `\n全部通过（共 ${total} 项）`);
 if (bad) process.exitCode = 1;
