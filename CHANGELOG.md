@@ -1,5 +1,12 @@
 # Changelog
 
+## 未发布
+
+- 新增 `opencode-go` 预设：接 OpenCode 的 Go 套餐，地址 `https://opencode.ai/inference/go/openai/v1`，
+  默认模型 `deepseek-v4.1-flash`。该网关要求请求带 `x-opencode-session`，缺了会被 400 MissingSessionID 挡下，
+  现在对 `opencode.ai` 下的地址自动补这个头并自报 user agent；别家的地址不受影响。
+- 测试 86 → 89 项。
+
 ## 0.10.0
 
 > 自动撤回卡片需要记忆核心 **0.23.0** 及以上；旧版只会删掉原文。
