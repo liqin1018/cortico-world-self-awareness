@@ -4,6 +4,7 @@
  * 四种模式轮换，是为了不让内心独白总是同一个腔调。
  * 全部用「你就是她」的第二人称写提示词——用第三人称会写成分析报告。
  */
+import { randomUUID } from 'node:crypto';
 import type { Thought, ThoughtMode } from './pool.ts';
 import { clampImportance, clampNextIn, clampRestIn, density } from './pool.ts';
 import { clip } from './time.ts';
@@ -134,6 +135,19 @@ export function buildMessages(mode: ThoughtMode, ctx: ThinkContext): { role: str
   ];
 }
 
+/** 这次进程的会话 id。OpenCode 网关靠它决定路由，缺了会被 400 MissingSessionID 直接挡下。 */
+const GATEWAY_SESSION = randomUUID();
+
+/**
+ * OpenCode 网关要求的请求头：会话 id 加自报身份。别家服务不需要这两个头，某些反向代理还会嫌它们，
+ * 所以只在网关域名下带。地址不合法时 new URL 就地抛，调用方会把它变成一条错误提示。
+ */
+export function gatewayHeaders(baseUrl: string): Record<string, string> {
+  const host = new URL(baseUrl).hostname;
+  if (host !== 'opencode.ai' && !host.endsWith('.opencode.ai')) return {};
+  return { 'user-agent': 'cortico-world-self-awareness', 'x-opencode-session': GATEWAY_SESSION };
+}
+
 export interface ModelOptions {
   baseUrl: string;
   model: string;
@@ -158,7 +172,7 @@ export async function callModel(opts: ModelOptions, messages: { role: string; co
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? 60_000);
   try {
-    const headers: Record<string, string> = { 'content-type': 'application/json' };
+    const headers: Record<string, string> = { 'content-type': 'application/json', ...gatewayHeaders(opts.baseUrl) };
     if (opts.apiKey) headers.authorization = `Bearer ${opts.apiKey}`;
     const rsp = await fetch(url, {
       method: 'POST',

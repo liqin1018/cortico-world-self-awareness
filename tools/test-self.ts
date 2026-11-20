@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SELF_AWARENESS_DEFAULTS, resolveEndpoint, type SelfAwarenessConfig } from '../src/config.ts';
 import { density, nextGapMinutes, noteTtlMs, ThoughtPool, REFLECT_THRESHOLD } from '../src/pool.ts';
-import { parseThought, buildMessages } from '../src/think.ts';
+import { parseThought, buildMessages, gatewayHeaders } from '../src/think.ts';
 import { readUrges } from '../src/urge.ts';
 import { SelfAwarenessWorld } from '../src/world.ts';
 
@@ -600,6 +600,19 @@ await (async () => {
   ok(left.includes('k1') && !left.includes('k2'), '82) 文件里真的少了');
   ok(existsSync(`${file}.bak`), '83) 删前留了 .bak 备份');
   ok(pool.remove('nope') === null, '84) 删不存在的返回 null');
+}
+
+/* 18) OpenCode Go：预设地址与网关请求头 */
+{
+  const base = { ...SELF_AWARENESS_DEFAULTS };
+  const go = resolveEndpoint({ ...base, provider: 'opencode-go' });
+  ok(
+    go.baseUrl === 'https://opencode.ai/inference/go/openai/v1' && go.model === 'deepseek-v4.1-flash' && go.needsKey,
+    '85) opencode-go 预设填好地址、模型，且要密钥',
+  );
+  const headers = gatewayHeaders(go.baseUrl);
+  ok(Boolean(headers['x-opencode-session']) && Boolean(headers['user-agent']), '86) 网关地址带会话 id 与自报身份');
+  ok(Object.keys(gatewayHeaders('https://api.deepseek.com/v1')).length === 0, '87) 别家地址不带网关请求头');
 }
 
 console.log(bad ? `\n${bad} 项失败（共 ${total}）` : `\n全部通过（共 ${total} 项）`);

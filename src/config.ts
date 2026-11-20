@@ -1,7 +1,7 @@
 /** 配置：默认关闭，因为没配模型就不会想事情。 */
 import type { ConfigGroup } from 'cortico/core/types.ts';
 
-export type Provider = 'deepseek' | 'openai' | 'ollama' | 'custom';
+export type Provider = 'deepseek' | 'openai' | 'opencode-go' | 'ollama' | 'custom';
 
 export interface SelfAwarenessConfig {
   enabled: boolean;
@@ -39,6 +39,8 @@ export interface SelfAwarenessConfig {
 export const PROVIDER_PRESETS: Record<Provider, { baseUrl: string; model: string; needsKey: boolean }> = {
   deepseek: { baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', needsKey: true },
   openai: { baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini', needsKey: true },
+  // OpenCode 的 Go 套餐：模型名用裸 id，请求还必须带 x-opencode-session（见 think.ts 的 gatewayHeaders）
+  'opencode-go': { baseUrl: 'https://opencode.ai/inference/go/openai/v1', model: 'deepseek-v4.1-flash', needsKey: true },
   ollama: { baseUrl: 'http://127.0.0.1:11434/v1', model: 'qwen2.5:7b', needsKey: false },
   custom: { baseUrl: '', model: '', needsKey: false },
 };
@@ -80,7 +82,7 @@ const RAW_GROUP: ConfigGroup = {
     properties: {
       'worlds.self-awareness.provider': {
         type: 'string',
-        enum: ['deepseek', 'openai', 'ollama', 'custom'],
+        enum: ['deepseek', 'openai', 'opencode-go', 'ollama', 'custom'],
         title: '快捷预设',
         description: '只是快捷选择：下面两项留空才用它。你已经填了地址和模型，那选哪个都一样——只有 ollama 例外，它不需要密钥。',
         default: 'deepseek',
